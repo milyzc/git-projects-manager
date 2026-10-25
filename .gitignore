@@ -1,0 +1,6 @@
+# The real manifest lives in ~/.config/git-projects/; never commit a filled-in copy.
+/projects.yml
+*.yml.bak
+*.age
+*.gpg
+.DS_Store
