@@ -41,11 +41,18 @@ runs `git submodule update --init --recursive` when any submodule is still unini
 | command | what it does |
 |---|---|
 | `git projects list [--section s] [--status st]` | table with repo state (`missing`, `not-git`, `clean`, `dirty`), branch and ahead/behind (`+n -m`, no fetch) |
-| `git projects clone [--section s] [--status st] [--dry-run] [--protocol ssh\|https]` | clones every project whose path does not exist; existing repos are skipped and only get missing remotes added. Skips `archived` by default. |
+| `git projects clone [--section s] [--status st] [--dry-run] [--adopt] [--protocol ssh\|https]` | clones every project whose path does not exist or is an empty directory; existing repos are skipped and only get missing remotes added. Skips `archived` by default. |
 | `git projects paths [--section s] [--status st]` | one path per line for the repos present on disk (`for d in $(git projects paths); do ...`) |
 | `git projects check` | validates the manifest: syntax, required fields, duplicate paths, credentials in URLs, remote URL drift in cloned repos |
 | `git projects init` | creates the manifest from the template if it does not exist |
 | `git projects help` (or `-h`) | usage summary. `git projects --help` does not work: git intercepts `--help` and looks for a man page |
+
+A path that already holds files but no `.git` is reported as an error and left alone. With
+`--adopt`, `clone` turns it into a repo instead: `git init`, the manifest remotes, a fetch, and HEAD
+plus the index set to the remote branch (`branch:` or the remote's default) while every local file
+stays as it is. `git status` in that repo then shows how the local files differ from the remote, and
+you decide what to commit. If the remote has no commits yet, the repo is just initialized with its
+remotes for you to commit and push.
 
 `--protocol` rewrites GitHub/GitLab style URLs on the fly (`git@host:org/repo.git` ⇄
 `https://host/org/repo.git`) for a machine that has no ssh key, without editing the manifest.
