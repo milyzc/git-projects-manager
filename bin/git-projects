@@ -4,7 +4,9 @@
 #
 # Usage:
 #   git projects [list]  [--section <sec>] [--status <st>] [--file <yml>]   table with repo state
-#   git projects clone   [--section <sec>] [--status <st>] [--dry-run] [--protocol ssh|https] [--file <yml>]
+#   git projects clone   [--section <sec>] [--status <st>] [--dry-run] [--adopt] [--protocol ssh|https] [--file <yml>]
+#                        --adopt: a path that already has files but no .git gets `git init` + the manifest
+#                        remotes, HEAD set to the remote branch and every local file kept for you to review
 #   git projects paths   [--section <sec>] [--status <st>] [--file <yml>]   one existing repo path per line
 #   git projects check   [--file <yml>]                                     validate the manifest
 #   git projects init    [--file <yml>]                                     create the manifest from the template
@@ -24,6 +26,7 @@ cmd="list"
 section=""
 status_filter=""
 dry_run=0
+adopt=0
 protocol=""
 
 die() { echo "git-projects: $1" >&2; exit "${2:-1}"; }
@@ -31,13 +34,14 @@ die() { echo "git-projects: $1" >&2; exit "${2:-1}"; }
 while [ $# -gt 0 ]; do
   case "$1" in
     list|clone|paths|check|init) cmd="$1"; shift ;;
-    help)         sed -n '2,15p' "$SELF" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    help)         sed -n '2,17p' "$SELF" | sed 's/^# \{0,1\}//'; exit 0 ;;
     -s|--section) [ -n "${2:-}" ] || die "--section needs a value" 2; section="$2"; shift 2 ;;
     --status)     [ -n "${2:-}" ] || die "--status needs a value" 2; status_filter="$2"; shift 2 ;;
     -f|--file)    [ -n "${2:-}" ] || die "--file needs a value" 2; MANIFEST="$2"; shift 2 ;;
     --protocol)   [ -n "${2:-}" ] || die "--protocol needs a value" 2; protocol="$2"; shift 2 ;;
     -n|--dry-run) dry_run=1; shift ;;
-    -h|--help)    sed -n '2,15p' "$SELF" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    --adopt)      adopt=1; shift ;;
+    -h|--help)    sed -n '2,17p' "$SELF" | sed 's/^# \{0,1\}//'; exit 0 ;;
     -*)           die "unknown option: $1 (see: git projects help)" 2 ;;
     *)            die "unknown command: $1 (see: git projects help)" 2 ;;
   esac
@@ -308,6 +312,45 @@ ensure_submodules() {
   fi
 }
 
+# Turns a directory that already has files (but no .git) into a repo wired to the manifest remotes.
+# Every local file is kept: HEAD and the index point at the remote branch, the working tree is
+# untouched, so `git status` shows exactly how the local files differ from the remote.
+# $1 repo path, $2 "name=url name=url" (origin first), $3 declared branch or ""
+adopt_repo() {
+  local repo="$1" remotes="$2" branch="$3" kv rname url first_name errlog
+  first_name="${remotes%% *}"; first_name="${first_name%%=*}"
+  if [ "$dry_run" -eq 1 ]; then
+    echo "  would run: git init; git remote add <each remote>; git fetch $first_name; git reset --mixed $first_name/<branch> (files kept)"
+    return 0
+  fi
+  git -C "$repo" init --quiet || return 1
+  for kv in $remotes; do
+    rname="${kv%%=*}"; url="${kv#*=}"
+    git -C "$repo" remote add "$rname" "$url" || return 1
+  done
+  errlog="$(mktemp "${TMPDIR:-/tmp}/git-projects.XXXXXX")"
+  if ! GIT_TERMINAL_PROMPT=0 git -C "$repo" fetch --quiet "$first_name" 2>"$errlog"; then
+    echo "  failed (fetch): repo initialized with remotes, but could not reach $first_name"
+    sed 's/^/    /' "$errlog"; rm -f "$errlog"
+    return 1
+  fi
+  rm -f "$errlog"
+  if [ -z "$branch" ]; then
+    git -C "$repo" remote set-head "$first_name" -a >/dev/null 2>&1 || true
+    branch="$(git -C "$repo" symbolic-ref -q "refs/remotes/$first_name/HEAD" 2>/dev/null || true)"
+    branch="${branch#refs/remotes/$first_name/}"
+  fi
+  if [ -z "$branch" ] || ! git -C "$repo" rev-parse -q --verify "refs/remotes/$first_name/$branch" >/dev/null 2>&1; then
+    [ -n "$branch" ] && git -C "$repo" symbolic-ref HEAD "refs/heads/$branch"
+    echo "  adopted: $first_name has no commits${branch:+ on '$branch'}; files left unstaged. Commit and push when ready."
+    return 0
+  fi
+  git -C "$repo" symbolic-ref HEAD "refs/heads/$branch"
+  git -C "$repo" reset --quiet --mixed "$first_name/$branch" || return 1
+  git -C "$repo" branch --quiet --set-upstream-to="$first_name/$branch" "$branch" >/dev/null 2>&1 || true
+  echo "  adopted: HEAD at $first_name/$branch, local files kept. Run 'git status' there to compare."
+}
+
 rewrite_remotes() {
   local remotes="$1" kv out=""
   for kv in $remotes; do
@@ -404,20 +447,33 @@ case "$cmd" in
       remotes="$(rewrite_remotes "$remotes")"
       first="${remotes%% *}"
       origin_url="${first#*=}"
-      if [ -d "$p_exp" ]; then
-        if git -C "$p_exp" rev-parse --git-dir >/dev/null 2>&1; then
-          echo "[$label] exists at $p (skipped)"
-          ensure_remotes "$p_exp" "$remotes"
-          if [ "$submodules" = "1" ]; then
-            ensure_submodules "$p_exp" || failed=$((failed+1))
+      if [ -d "$p_exp" ] && git -C "$p_exp" rev-parse --git-dir >/dev/null 2>&1; then
+        echo "[$label] exists at $p (skipped)"
+        ensure_remotes "$p_exp" "$remotes"
+        if [ "$submodules" = "1" ]; then
+          ensure_submodules "$p_exp" || failed=$((failed+1))
+        fi
+        skipped=$((skipped+1))
+        continue
+      fi
+      if [ -d "$p_exp" ] && [ -n "$(ls -A "$p_exp" 2>/dev/null)" ]; then
+        # directory with files that is not a repo: only --adopt touches it
+        if [ "$adopt" -eq 1 ]; then
+          echo "[$label] adopting $p -> $origin_url"
+          if [ "$dry_run" -eq 1 ]; then
+            adopt_repo "$p_exp" "$remotes" "$branch"
+          elif adopt_repo "$p_exp" "$remotes" "$branch"; then
+            cloned=$((cloned+1))
+          else
+            failed=$((failed+1))
           fi
-          skipped=$((skipped+1))
         else
-          echo "[$label] ERROR: $p exists but is not a git repository"
+          echo "[$label] ERROR: $p exists with files but is not a git repository (use --adopt to init it with the manifest remotes)"
           failed=$((failed+1))
         fi
         continue
       fi
+      # path missing or empty directory: git clone accepts both
       args=(clone --quiet)
       [ -n "$branch" ] && args+=(-b "$branch")
       [ "$submodules" = "1" ] && args+=(--recurse-submodules)
