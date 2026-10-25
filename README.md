@@ -45,6 +45,7 @@ runs `git submodule update --init --recursive` when any submodule is still unini
 | `git projects paths [--section s] [--status st]` | one path per line for the repos present on disk (`for d in $(git projects paths); do ...`) |
 | `git projects check` | validates the manifest: syntax, required fields, duplicate paths, credentials in URLs, remote URL drift in cloned repos |
 | `git projects init` | creates the manifest from the template if it does not exist |
+| `git projects help` (or `-h`) | usage summary. `git projects --help` does not work: git intercepts `--help` and looks for a man page |
 
 `--protocol` rewrites GitHub/GitLab style URLs on the fly (`git@host:org/repo.git` ⇄
 `https://host/org/repo.git`) for a machine that has no ssh key, without editing the manifest.
