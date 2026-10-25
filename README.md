@@ -31,7 +31,11 @@ personal:
       origin: https://github.com/me/b.git # cloned from origin (or the first one)
       upstream: git@github.com:org/b.git  # added with `git remote add`
     branch: main                          # optional, passed as -b
+    submodules: true                      # optional: --recurse-submodules on clone
 ```
+With `submodules: true`, `clone` passes `--recurse-submodules`; on a repo that already exists it
+runs `git submodule update --init --recursive` when any submodule is still uninitialized.
+`check` warns when a cloned repo has a `.gitmodules` but the manifest does not set the flag.
 
 ## Commands
 | command | what it does |

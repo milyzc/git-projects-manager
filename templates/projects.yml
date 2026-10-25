@@ -9,6 +9,8 @@
 #            URL (becomes `origin`) or a mapping of named remotes; `origin` is cloned, the rest
 #            are added with `git remote add`.
 #   branch:  branch to check out on clone (optional, `-b`).
+#   submodules: true | false (default). true clones with --recurse-submodules and, on a repo that
+#            already exists, runs `git submodule update --init --recursive` if any is missing.
 #   status:  active (default) | paused | archived. `clone` skips archived unless --status says otherwise.
 #   notes:   short description (optional).
 # Unknown keys (e.g. ai-memory's `agents:` / `memory:`) are ignored, so this file can be shared.
@@ -36,4 +38,5 @@ university:
   # project-c:
   #   path: ~/university/project-c
   #   remote: https://gitlab.com/me/project-c.git
+  #   submodules: true
   #   status: paused

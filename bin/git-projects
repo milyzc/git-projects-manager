@@ -206,8 +206,12 @@ for sec, projs in data.items():
                 continue
             clean.append(f"{rname}={url}")
         branch = str(cfg.get("branch", "") or "").strip()
+        sub_raw = str(cfg.get("submodules", "false")).strip().lower()
+        if sub_raw not in ("true", "false", "1", "0", "yes", "no"):
+            err(f"{label}: 'submodules' must be true or false")
+        submodules = "1" if sub_raw in ("true", "1", "yes") else "0"
         notes = str(cfg.get("notes", "") or "").replace("\t", " ").replace("\n", " ").strip()
-        rows.append((sec, name, st, p, p_exp, " ".join(clean), branch, notes))
+        rows.append((sec, name, st, p, p_exp, " ".join(clean), branch, submodules, notes))
 
 if mode == "check":
     for m in errors:
@@ -217,14 +221,14 @@ if mode == "check":
     print(f"{len(rows)} project(s), {len(errors)} error(s), {len(warnings)} warning(s)")
     sys.exit(1 if errors else 0)
 
-for sec, name, st, p, p_exp, remotes, branch, notes in rows:
+for sec, name, st, p, p_exp, remotes, branch, submodules, notes in rows:
     if sec_filter and sec != sec_filter:
         continue
     if st_filter == "!archived" and st == "archived":
         continue
     if st_filter and st_filter not in ("all", "!archived") and st != st_filter:
         continue
-    print("\x1f".join((sec, name, st, p, p_exp, remotes, branch, notes)))
+    print("\x1f".join((sec, name, st, p, p_exp, remotes, branch, submodules, notes)))
 PY
 }
 
@@ -285,6 +289,23 @@ ensure_remotes() {
   done
 }
 
+# Initializes the submodules of an existing repo when any is still uninitialized ("-" in status).
+ensure_submodules() {
+  local repo="$1"
+  [ -f "$repo/.gitmodules" ] || { echo "  note: submodules: true but the repo has no .gitmodules"; return 0; }
+  git -C "$repo" submodule status 2>/dev/null | grep -q '^-' || return 0
+  if [ "$dry_run" -eq 1 ]; then
+    echo "  would run: git submodule update --init --recursive"
+    return 0
+  fi
+  if GIT_TERMINAL_PROMPT=0 git -C "$repo" submodule update --init --recursive --quiet; then
+    echo "  initialized submodules"
+  else
+    echo "  failed: submodule update --init --recursive (check access to the submodule remotes)"
+    return 1
+  fi
+}
+
 rewrite_remotes() {
   local remotes="$1" kv out=""
   for kv in $remotes; do
@@ -311,7 +332,7 @@ case "$cmd" in
     printf '%-12s %-22s %-9s %-8s %-18s %s\n' "SECTION" "PROJECT" "STATUS" "REPO" "BRANCH" "PATH / NOTES"
     printf '%-12s %-22s %-9s %-8s %-18s %s\n' "-------" "-------" "------" "----" "------" "------------"
     found=0
-    while IFS=$'\x1f' read -r sec name st p p_exp remotes branch notes; do
+    while IFS=$'\x1f' read -r sec name st p p_exp remotes branch submodules notes; do
       [ -n "$name" ] || continue
       found=1
       state="$(repo_state "$p_exp")"
@@ -329,7 +350,7 @@ case "$cmd" in
   paths)
     need_manifest
     rows="$(parse_projects)"
-    while IFS=$'\x1f' read -r sec name st p p_exp remotes branch notes; do
+    while IFS=$'\x1f' read -r sec name st p p_exp remotes branch submodules notes; do
       [ -n "$p_exp" ] && [ -d "$p_exp" ] && git -C "$p_exp" rev-parse --git-dir >/dev/null 2>&1 && printf '%s\n' "$p_exp"
     done <<< "$rows"
     ;;
@@ -341,7 +362,7 @@ case "$cmd" in
     parse_projects check || rc=$?
     if [ "$rc" -eq 0 ]; then
       rows="$(parse_projects)"
-      while IFS=$'\x1f' read -r sec name st p p_exp remotes branch notes; do
+      while IFS=$'\x1f' read -r sec name st p p_exp remotes branch submodules notes; do
         [ -n "$name" ] || continue
         [ "$(repo_state "$p_exp")" = "clean" ] || [ "$(repo_state "$p_exp")" = "dirty" ] || continue
         for kv in $remotes; do
@@ -352,6 +373,11 @@ case "$cmd" in
             echo "warning: $sec/$name: remote '$rname' not configured in $p (clone will add it)"
           fi
         done
+        if [ -f "$p_exp/.gitmodules" ] && [ "$submodules" != "1" ]; then
+          echo "warning: $sec/$name: repo has .gitmodules but manifest lacks 'submodules: true'"
+        elif [ "$submodules" = "1" ] && git -C "$p_exp" submodule status 2>/dev/null | grep -q '^-'; then
+          echo "warning: $sec/$name: submodules not initialized (clone will run submodule update --init)"
+        fi
       done <<< "$rows"
       echo "ok"
     fi
@@ -364,7 +390,7 @@ case "$cmd" in
     rows="$(parse_projects)"
     echo "manifest: $MANIFEST"
     cloned=0; skipped=0; failed=0
-    while IFS=$'\x1f' read -r sec name st p p_exp remotes branch notes; do
+    while IFS=$'\x1f' read -r sec name st p p_exp remotes branch submodules notes; do
       [ -n "$name" ] || continue
       label="$sec/$name"
       if [ -z "$p_exp" ]; then
@@ -380,6 +406,9 @@ case "$cmd" in
         if git -C "$p_exp" rev-parse --git-dir >/dev/null 2>&1; then
           echo "[$label] exists at $p (skipped)"
           ensure_remotes "$p_exp" "$remotes"
+          if [ "$submodules" = "1" ]; then
+            ensure_submodules "$p_exp" || failed=$((failed+1))
+          fi
           skipped=$((skipped+1))
         else
           echo "[$label] ERROR: $p exists but is not a git repository"
@@ -389,6 +418,7 @@ case "$cmd" in
       fi
       args=(clone --quiet)
       [ -n "$branch" ] && args+=(-b "$branch")
+      [ "$submodules" = "1" ] && args+=(--recurse-submodules)
       args+=(-- "$origin_url" "$p_exp")
       if [ "$dry_run" -eq 1 ]; then
         echo "[$label] would run: git ${args[*]}"
