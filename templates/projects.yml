@@ -1,0 +1,39 @@
+# git-projects manifest: the git repositories of this machine, grouped by arbitrary sections
+# (work, personal, university...). THIS FILE IS A TEMPLATE: install.sh / `git projects init`
+# copy it to ~/.config/git-projects/projects.yml (outside the repository). Override the
+# location with $GIT_PROJECTS_FILE or --file.
+#
+# Fields per project:
+#   path:    where the repository lives locally (~ is expanded). Required.
+#   remote:  URL to clone from, ssh or https, written exactly as git expects it. Either a single
+#            URL (becomes `origin`) or a mapping of named remotes; `origin` is cloned, the rest
+#            are added with `git remote add`.
+#   branch:  branch to check out on clone (optional, `-b`).
+#   status:  active (default) | paused | archived. `clone` skips archived unless --status says otherwise.
+#   notes:   short description (optional).
+# Unknown keys (e.g. ai-memory's `agents:` / `memory:`) are ignored, so this file can be shared.
+#
+# NEVER put credentials here: no https://user:token@..., no ?token= in URLs. `git projects check`
+# rejects them. https authenticates through the git credential helper (osxkeychain, gh auth),
+# ssh through your keys / agent.
+
+work:
+  # project-a:
+  #   path: ~/work/project-a
+  #   remote: git@github.com:org/project-a.git
+  #   status: active
+  #   notes: Main service
+
+personal:
+  # project-b:
+  #   path: ~/personal/project-b
+  #   remote:
+  #     origin: https://github.com/me/project-b.git
+  #     upstream: git@github.com:org/project-b.git
+  #   branch: main
+
+university:
+  # project-c:
+  #   path: ~/university/project-c
+  #   remote: https://gitlab.com/me/project-c.git
+  #   status: paused

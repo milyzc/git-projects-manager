@@ -1,0 +1,419 @@
+#!/usr/bin/env bash
+# git-projects: track the git repositories of this machine from a YAML manifest and clone the missing ones.
+# Manifest: --file <yml> | $GIT_PROJECTS_FILE | ~/.config/git-projects/projects.yml
+#
+# Usage:
+#   git projects [list]  [--section <sec>] [--status <st>] [--file <yml>]
+#   git projects clone   [--section <sec>] [--status <st>] [--dry-run] [--protocol ssh|https] [--file <yml>]
+#   git projects paths   [--section <sec>] [--status <st>] [--file <yml>]
+#   git projects check   [--file <yml>]
+#   git projects init    [--file <yml>]
+#
+# Status filter: active | paused | archived | all (clone defaults to everything except archived).
+# Requires git and python3 (standard library only). Credentials never go in the manifest:
+# https relies on the git credential helper, ssh on your keys/agent. Prompts are disabled.
+set -euo pipefail
+
+SELF="$(python3 -c 'import os,sys; print(os.path.realpath(sys.argv[1]))' "${BASH_SOURCE[0]}")"
+ROOT="$(cd "$(dirname "$SELF")/.." && pwd -P)"
+DEFAULT_FILE="$HOME/.config/git-projects/projects.yml"
+MANIFEST="${GIT_PROJECTS_FILE:-$DEFAULT_FILE}"
+
+cmd="list"
+section=""
+status_filter=""
+dry_run=0
+protocol=""
+
+die() { echo "git-projects: $1" >&2; exit "${2:-1}"; }
+
+while [ $# -gt 0 ]; do
+  case "$1" in
+    list|clone|paths|check|init) cmd="$1"; shift ;;
+    -s|--section) [ -n "${2:-}" ] || die "--section needs a value" 2; section="$2"; shift 2 ;;
+    --status)     [ -n "${2:-}" ] || die "--status needs a value" 2; status_filter="$2"; shift 2 ;;
+    -f|--file)    [ -n "${2:-}" ] || die "--file needs a value" 2; MANIFEST="$2"; shift 2 ;;
+    --protocol)   [ -n "${2:-}" ] || die "--protocol needs a value" 2; protocol="$2"; shift 2 ;;
+    -n|--dry-run) dry_run=1; shift ;;
+    -h|--help)    sed -n '2,14p' "$SELF" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    -*)           die "unknown option: $1 (see --help)" 2 ;;
+    *)            die "unknown command: $1 (see --help)" 2 ;;
+  esac
+done
+MANIFEST="${MANIFEST/#\~/$HOME}"
+
+case "$status_filter" in
+  ""|all|active|paused|archived) ;;
+  *) die "--status must be active, paused, archived or all" 2 ;;
+esac
+case "$protocol" in
+  ""|ssh|https) ;;
+  *) die "--protocol must be ssh or https" 2 ;;
+esac
+
+need_manifest() {
+  [ -f "$MANIFEST" ] || die "manifest $MANIFEST not found (set GIT_PROJECTS_FILE, pass --file, or run: git projects init)"
+}
+
+# Parses the manifest and prints one row per project, fields separated by \x1f (a tab separator
+# would make bash `read` collapse empty fields):
+#   section  name  status  path  path_expanded  remotes  branch  notes
+# `remotes` is "name=url name=url" with origin first. Exits 3 if a remote carries credentials.
+# In check mode it prints every problem found and exits 1 on errors.
+parse_projects() {
+  python3 - "$MANIFEST" "$section" "$status_filter" "${1:-rows}" <<'PY'
+import os, re, sys
+
+path, sec_filter, st_filter, mode = sys.argv[1:5]
+STATUSES = ("active", "paused", "archived")
+REMOTE_NAME = re.compile(r"^[A-Za-z0-9._-]+$")
+URL_SCHEME = re.compile(r"^([A-Za-z][A-Za-z0-9+.-]*)://([^/]*)(/.*)?$")
+SCP_LIKE = re.compile(r"^([^/@]+)@[^:/]+:")
+
+def parse_simple_yaml(lines):
+    """Nested mappings of scalars, indentation based. Enough for this manifest."""
+    root = {}
+    stack = [(-1, root)]
+    for n, raw in enumerate(lines, 1):
+        line = re.sub(r"(^|\s)#.*$", "", raw.replace("\t", "  ")).rstrip()
+        if not line.strip():
+            continue
+        indent = len(line) - len(line.lstrip(" "))
+        stripped = line.strip()
+        if ":" not in stripped:
+            raise ValueError(f"line {n}: expected 'key: value'")
+        k, v = [x.strip() for x in stripped.split(":", 1)]
+        if len(v) >= 2 and v[0] == v[-1] and v[0] in ("'", '"'):
+            v = v[1:-1]
+        while stack and indent <= stack[-1][0]:
+            stack.pop()
+        if not stack:
+            raise ValueError(f"line {n}: bad indentation")
+        parent = stack[-1][1]
+        if v == "":
+            child = {}
+            parent[k] = child
+            stack.append((indent, child))
+        else:
+            parent[k] = v
+    return root
+
+def load(text):
+    try:
+        import yaml  # type: ignore
+        return yaml.safe_load(text) or {}
+    except ImportError:
+        return parse_simple_yaml(text.splitlines())
+
+def cred_problem(url):
+    m = URL_SCHEME.match(url)
+    if m:
+        scheme, auth, rest = m.group(1).lower(), m.group(2), m.group(3) or ""
+        if "@" in auth:
+            userinfo = auth.rsplit("@", 1)[0]
+            if ":" in userinfo:
+                return "user:password embedded in URL"
+            if scheme in ("http", "https"):
+                return "username embedded in https URL (let the credential helper supply it)"
+        if re.search(r"[?&](access_|private_|oauth_)?token=|[?&]password=", rest, re.I):
+            return "token in URL query"
+        return None
+    m = SCP_LIKE.match(url)
+    if m and ":" in m.group(1):
+        return "user:password embedded in URL"
+    return None
+
+def mask(url):
+    url = re.sub(r"^([A-Za-z][A-Za-z0-9+.-]*://)[^/@]+@", r"\1***@", url)
+    return re.sub(r"([?&](?:access_|private_|oauth_)?token=|[?&]password=)[^&]*", r"\1***", url, flags=re.I)
+
+errors, warnings = [], []
+def err(msg): errors.append(msg)
+def warn(msg): warnings.append(msg)
+
+if not os.path.isfile(path):
+    print(f"git-projects: manifest {path} not found", file=sys.stderr)
+    sys.exit(1)
+with open(path, encoding="utf-8") as fh:
+    text = fh.read()
+try:
+    data = load(text)
+except Exception as exc:  # noqa: BLE001
+    print(f"git-projects: cannot parse {path}: {exc}", file=sys.stderr)
+    sys.exit(1)
+if not isinstance(data, dict):
+    print(f"git-projects: {path}: top level must be a mapping of sections", file=sys.stderr)
+    sys.exit(1)
+
+rows = []
+seen_paths = {}
+for sec, projs in data.items():
+    sec = str(sec)
+    if projs is None:
+        continue
+    if not isinstance(projs, dict):
+        err(f"section '{sec}' must be a mapping of projects")
+        continue
+    for name, cfg in projs.items():
+        name = str(name)
+        label = f"{sec}/{name}"
+        if cfg is None:
+            cfg = {}
+        if not isinstance(cfg, dict):
+            err(f"{label}: must be a mapping of fields")
+            continue
+        st = (str(cfg.get("status", "active") or "active")).strip().lower()
+        if st not in STATUSES:
+            err(f"{label}: unknown status '{st}' (expected one of {', '.join(STATUSES)})")
+        p = str(cfg.get("path", "") or "").strip()
+        p_exp = os.path.expanduser(p) if p else ""
+        if not p:
+            err(f"{label}: missing 'path'")
+        elif p_exp in seen_paths:
+            err(f"{label}: path {p} already used by {seen_paths[p_exp]}")
+        else:
+            seen_paths[p_exp] = label
+        raw_remote = cfg.get("remote", None)
+        remotes = []
+        if raw_remote is None or raw_remote == "" or raw_remote == {}:
+            warn(f"{label}: no 'remote' (will be listed but never cloned)")
+        elif isinstance(raw_remote, str):
+            remotes = [("origin", raw_remote.strip())]
+        elif isinstance(raw_remote, dict):
+            items = [(str(k), str(v or "").strip()) for k, v in raw_remote.items()]
+            items.sort(key=lambda kv: 0 if kv[0] == "origin" else 1)
+            remotes = items
+        else:
+            err(f"{label}: 'remote' must be a URL or a mapping name: url")
+        clean = []
+        for rname, url in remotes:
+            if not REMOTE_NAME.match(rname):
+                err(f"{label}: invalid remote name '{rname}'")
+                continue
+            if not url:
+                err(f"{label}: remote '{rname}' has an empty URL")
+                continue
+            if any(ch.isspace() for ch in url):
+                err(f"{label}: remote '{rname}' URL contains whitespace")
+                continue
+            problem = cred_problem(url)
+            if problem:
+                err(f"{label}: remote '{rname}' {problem}: {mask(url)}")
+                if mode == "rows":
+                    print(f"git-projects: {label}: remote '{rname}' {problem}: {mask(url)}", file=sys.stderr)
+                    print("git-projects: refusing to continue; remove the credential from the manifest", file=sys.stderr)
+                    sys.exit(3)
+                continue
+            clean.append(f"{rname}={url}")
+        branch = str(cfg.get("branch", "") or "").strip()
+        notes = str(cfg.get("notes", "") or "").replace("\t", " ").replace("\n", " ").strip()
+        rows.append((sec, name, st, p, p_exp, " ".join(clean), branch, notes))
+
+if mode == "check":
+    for m in errors:
+        print(f"error: {m}")
+    for m in warnings:
+        print(f"warning: {m}")
+    print(f"{len(rows)} project(s), {len(errors)} error(s), {len(warnings)} warning(s)")
+    sys.exit(1 if errors else 0)
+
+for sec, name, st, p, p_exp, remotes, branch, notes in rows:
+    if sec_filter and sec != sec_filter:
+        continue
+    if st_filter == "!archived" and st == "archived":
+        continue
+    if st_filter and st_filter not in ("all", "!archived") and st != st_filter:
+        continue
+    print("\x1f".join((sec, name, st, p, p_exp, remotes, branch, notes)))
+PY
+}
+
+# Rewrites a URL to the protocol asked with --protocol (GitHub/GitLab style paths only).
+rewrite_url() {
+  local url="$1" host path
+  case "$protocol" in
+    https)
+      case "$url" in
+        git@*:*)       host="${url#git@}"; path="${host#*:}"; host="${host%%:*}"; printf 'https://%s/%s\n' "$host" "$path" ;;
+        ssh://git@*/*) host="${url#ssh://git@}"; path="${host#*/}"; host="${host%%/*}"; printf 'https://%s/%s\n' "$host" "$path" ;;
+        *)             printf '%s\n' "$url" ;;
+      esac ;;
+    ssh)
+      case "$url" in
+        https://*/*/*) host="${url#https://}"; path="${host#*/}"; host="${host%%/*}"; printf 'git@%s:%s\n' "$host" "$path" ;;
+        *)             printf '%s\n' "$url" ;;
+      esac ;;
+    *) printf '%s\n' "$url" ;;
+  esac
+}
+
+repo_state() {
+  local p_exp="$1"
+  if [ -z "$p_exp" ]; then echo "no-path"
+  elif [ ! -d "$p_exp" ]; then echo "missing"
+  elif ! git -C "$p_exp" rev-parse --git-dir >/dev/null 2>&1; then echo "not-git"
+  elif [ -n "$(git -C "$p_exp" status --porcelain 2>/dev/null)" ]; then echo "dirty"
+  else echo "clean"
+  fi
+}
+
+branch_info() {
+  local p_exp="$1" br counts ahead behind
+  br="$(git -C "$p_exp" symbolic-ref --short -q HEAD 2>/dev/null || echo "detached")"
+  counts="$(git -C "$p_exp" rev-list --left-right --count '@{u}...HEAD' 2>/dev/null || true)"
+  if [ -n "$counts" ]; then
+    behind="${counts%%[[:space:]]*}"; ahead="${counts##*[[:space:]]}"
+    [ "$ahead" != "0" ] && br="$br +$ahead"
+    [ "$behind" != "0" ] && br="$br -$behind"
+  fi
+  printf '%s\n' "$br"
+}
+
+# Adds the declared remotes that an existing repo lacks; warns when a URL differs.
+# $1 repo path, $2 "name=url name=url" (already protocol-rewritten)
+ensure_remotes() {
+  local repo="$1" remotes="$2" kv rname url current
+  for kv in $remotes; do
+    rname="${kv%%=*}"; url="${kv#*=}"
+    if current="$(git -C "$repo" remote get-url "$rname" 2>/dev/null)"; then
+      [ "$current" = "$url" ] || echo "  warning: remote '$rname' is $current, manifest says $url (left untouched)"
+    elif [ "$dry_run" -eq 1 ]; then
+      echo "  would run: git remote add $rname $url"
+    else
+      git -C "$repo" remote add "$rname" "$url" && echo "  added remote '$rname' -> $url"
+    fi
+  done
+}
+
+rewrite_remotes() {
+  local remotes="$1" kv out=""
+  for kv in $remotes; do
+    out="${out:+$out }${kv%%=*}=$(rewrite_url "${kv#*=}")"
+  done
+  printf '%s\n' "$out"
+}
+
+case "$cmd" in
+  init)
+    if [ -f "$MANIFEST" ]; then
+      echo "manifest already exists: $MANIFEST"
+      exit 0
+    fi
+    mkdir -p "$(dirname "$MANIFEST")"
+    cp "$ROOT/templates/projects.yml" "$MANIFEST"
+    echo "created $MANIFEST from template; edit it and run: git projects list"
+    ;;
+
+  list)
+    need_manifest
+    rows="$(parse_projects)"
+    echo "manifest: $MANIFEST"
+    printf '%-12s %-22s %-9s %-8s %-18s %s\n' "SECTION" "PROJECT" "STATUS" "REPO" "BRANCH" "PATH / NOTES"
+    printf '%-12s %-22s %-9s %-8s %-18s %s\n' "-------" "-------" "------" "----" "------" "------------"
+    found=0
+    while IFS=$'\x1f' read -r sec name st p p_exp remotes branch notes; do
+      [ -n "$name" ] || continue
+      found=1
+      state="$(repo_state "$p_exp")"
+      br="-"
+      case "$state" in clean|dirty) br="$(branch_info "$p_exp")" ;; esac
+      [ -z "$remotes" ] && state="$state*"
+      tail_info="${p:-}"
+      [ -n "$notes" ] && tail_info="${tail_info:+$tail_info — }$notes"
+      printf '%-12s %-22s %-9s %-8s %-18s %s\n' "$sec" "$name" "$st" "$state" "$br" "$tail_info"
+    done <<< "$rows"
+    [ "$found" -eq 1 ] || echo "(no projects matched)"
+    echo "(* = no remote declared)"
+    ;;
+
+  paths)
+    need_manifest
+    rows="$(parse_projects)"
+    while IFS=$'\x1f' read -r sec name st p p_exp remotes branch notes; do
+      [ -n "$p_exp" ] && [ -d "$p_exp" ] && git -C "$p_exp" rev-parse --git-dir >/dev/null 2>&1 && printf '%s\n' "$p_exp"
+    done <<< "$rows"
+    ;;
+
+  check)
+    need_manifest
+    echo "manifest: $MANIFEST"
+    rc=0
+    parse_projects check || rc=$?
+    if [ "$rc" -eq 0 ]; then
+      rows="$(parse_projects)"
+      while IFS=$'\x1f' read -r sec name st p p_exp remotes branch notes; do
+        [ -n "$name" ] || continue
+        [ "$(repo_state "$p_exp")" = "clean" ] || [ "$(repo_state "$p_exp")" = "dirty" ] || continue
+        for kv in $remotes; do
+          rname="${kv%%=*}"; url="${kv#*=}"
+          if current="$(git -C "$p_exp" remote get-url "$rname" 2>/dev/null)"; then
+            [ "$current" = "$url" ] || echo "warning: $sec/$name: remote '$rname' is $current, manifest says $url"
+          else
+            echo "warning: $sec/$name: remote '$rname' not configured in $p (clone will add it)"
+          fi
+        done
+      done <<< "$rows"
+      echo "ok"
+    fi
+    exit "$rc"
+    ;;
+
+  clone)
+    need_manifest
+    status_filter="${status_filter:-!archived}"
+    rows="$(parse_projects)"
+    echo "manifest: $MANIFEST"
+    cloned=0; skipped=0; failed=0
+    while IFS=$'\x1f' read -r sec name st p p_exp remotes branch notes; do
+      [ -n "$name" ] || continue
+      label="$sec/$name"
+      if [ -z "$p_exp" ]; then
+        echo "[$label] no path (skipped)"; skipped=$((skipped+1)); continue
+      fi
+      if [ -z "$remotes" ]; then
+        echo "[$label] no remote (skipped)"; skipped=$((skipped+1)); continue
+      fi
+      remotes="$(rewrite_remotes "$remotes")"
+      first="${remotes%% *}"
+      origin_url="${first#*=}"
+      if [ -d "$p_exp" ]; then
+        if git -C "$p_exp" rev-parse --git-dir >/dev/null 2>&1; then
+          echo "[$label] exists at $p (skipped)"
+          ensure_remotes "$p_exp" "$remotes"
+          skipped=$((skipped+1))
+        else
+          echo "[$label] ERROR: $p exists but is not a git repository"
+          failed=$((failed+1))
+        fi
+        continue
+      fi
+      args=(clone --quiet)
+      [ -n "$branch" ] && args+=(-b "$branch")
+      args+=(-- "$origin_url" "$p_exp")
+      if [ "$dry_run" -eq 1 ]; then
+        echo "[$label] would run: git ${args[*]}"
+        rest="${remotes#* }"
+        [ "$rest" != "$remotes" ] && ensure_remotes "$p_exp" "$rest"
+        continue
+      fi
+      echo "[$label] cloning $origin_url -> $p"
+      mkdir -p "$(dirname "$p_exp")"
+      errlog="$(mktemp "${TMPDIR:-/tmp}/git-projects.XXXXXX")"
+      if GIT_TERMINAL_PROMPT=0 git "${args[@]}" 2>"$errlog"; then
+        ensure_remotes "$p_exp" "$remotes"
+        cloned=$((cloned+1))
+      else
+        if grep -qiE 'authentication failed|could not read username|permission denied|publickey|terminal prompts disabled|403' "$errlog"; then
+          echo "  failed (auth): check your ssh key / credential helper for this host"
+        else
+          echo "  failed:"
+        fi
+        sed 's/^/    /' "$errlog"
+        failed=$((failed+1))
+      fi
+      rm -f "$errlog"
+    done <<< "$rows"
+    echo "cloned: $cloned  skipped: $skipped  failed: $failed"
+    [ "$failed" -eq 0 ] || exit 1
+    ;;
+esac
