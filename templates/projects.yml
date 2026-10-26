@@ -12,7 +12,11 @@
 #   submodules: true | false (default). true clones with --recurse-submodules and, on a repo that
 #            already exists, runs `git submodule update --init --recursive` if any is missing.
 #   status:  active (default) | paused | archived. `clone` skips archived unless --status says otherwise.
+#   user:    name / email written to the repo's local git config (and each submodule's) on clone,
+#            so commits do not ask for an identity. Optional; either key may be omitted.
 #   notes:   short description (optional).
+# Section defaults: a `defaults:` entry inside a section is not a project; its `user:` applies to
+# every project of the section, and a project's own `user:` overrides it key by key.
 # Unknown keys (e.g. ai-memory's `agents:` / `memory:`) are ignored, so this file can be shared.
 #
 # NEVER put credentials here: no https://user:token@..., no ?token= in URLs. `git projects check`
@@ -20,6 +24,10 @@
 # ssh through your keys / agent.
 
 work:
+  # defaults:
+  #   user:
+  #     name: Your Name
+  #     email: you@work.example
   # project-a:
   #   path: ~/work/project-a
   #   remote: git@github.com:org/project-a.git
@@ -33,6 +41,8 @@ personal:
   #     origin: https://github.com/me/project-b.git
   #     upstream: git@github.com:org/project-b.git
   #   branch: main
+  #   user:
+  #     email: you@personal.example
 
 university:
   # project-c:

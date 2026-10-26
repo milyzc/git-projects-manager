@@ -63,8 +63,9 @@ need_manifest() {
 
 # Parses the manifest and prints one row per project, fields separated by \x1f (a tab separator
 # would make bash `read` collapse empty fields):
-#   section  name  status  path  path_expanded  remotes  branch  notes
+#   section  name  status  path  path_expanded  remotes  branch  submodules  user_name  user_email  notes
 # `remotes` is "name=url name=url" with origin first. Exits 3 if a remote carries credentials.
+# user_name / user_email come from the project's `user:`, falling back to the section's `defaults: user:`.
 # In check mode it prints every problem found and exits 1 on errors.
 parse_projects() {
   python3 - "$MANIFEST" "$section" "$status_filter" "${1:-rows}" <<'PY'
@@ -137,6 +138,30 @@ errors, warnings = [], []
 def err(msg): errors.append(msg)
 def warn(msg): warnings.append(msg)
 
+def parse_user(raw, label):
+    """Returns {"name": ..., "email": ...} with only the keys that are set."""
+    if raw is None or raw == "" or raw == {}:
+        return {}
+    if not isinstance(raw, dict):
+        err(f"{label}: 'user' must be a mapping with name and/or email")
+        return {}
+    out = {}
+    for key in ("name", "email"):
+        val = str(raw.get(key, "") or "").strip()
+        if not val:
+            continue
+        if "\n" in val or "\x1f" in val:
+            err(f"{label}: user.{key} must be a single line")
+            continue
+        if key == "email" and ("@" not in val or any(ch.isspace() for ch in val)):
+            err(f"{label}: user.email '{val}' is not an email address")
+            continue
+        out[key] = val
+    for key in raw:
+        if str(key) not in ("name", "email"):
+            warn(f"{label}: unknown key 'user.{key}' (expected name, email)")
+    return out
+
 if not os.path.isfile(path):
     print(f"git-projects: manifest {path} not found", file=sys.stderr)
     sys.exit(1)
@@ -160,8 +185,19 @@ for sec, projs in data.items():
     if not isinstance(projs, dict):
         err(f"section '{sec}' must be a mapping of projects")
         continue
+    # `defaults` is reserved: values every project of the section inherits
+    defaults = projs.get("defaults") or {}
+    if not isinstance(defaults, dict):
+        err(f"{sec}/defaults: must be a mapping of fields")
+        defaults = {}
+    for key in defaults:
+        if str(key) != "user":
+            warn(f"{sec}/defaults: unknown key '{key}' (only 'user' is inherited)")
+    sec_user = parse_user(defaults.get("user"), f"{sec}/defaults")
     for name, cfg in projs.items():
         name = str(name)
+        if name == "defaults":
+            continue
         label = f"{sec}/{name}"
         if cfg is None:
             cfg = {}
@@ -216,8 +252,10 @@ for sec, projs in data.items():
         if sub_raw not in ("true", "false", "1", "0", "yes", "no"):
             err(f"{label}: 'submodules' must be true or false")
         submodules = "1" if sub_raw in ("true", "1", "yes") else "0"
+        user = {**sec_user, **parse_user(cfg.get("user"), label)}
         notes = str(cfg.get("notes", "") or "").replace("\t", " ").replace("\n", " ").strip()
-        rows.append((sec, name, st, p, p_exp, " ".join(clean), branch, submodules, notes))
+        rows.append((sec, name, st, p, p_exp, " ".join(clean), branch, submodules,
+                     user.get("name", ""), user.get("email", ""), notes))
 
 if mode == "check":
     for m in errors:
@@ -227,14 +265,15 @@ if mode == "check":
     print(f"{len(rows)} project(s), {len(errors)} error(s), {len(warnings)} warning(s)")
     sys.exit(1 if errors else 0)
 
-for sec, name, st, p, p_exp, remotes, branch, submodules, notes in rows:
+for row in rows:
+    sec, st = row[0], row[2]
     if sec_filter and sec != sec_filter:
         continue
     if st_filter == "!archived" and st == "archived":
         continue
     if st_filter and st_filter not in ("all", "!archived") and st != st_filter:
         continue
-    print("\x1f".join((sec, name, st, p, p_exp, remotes, branch, submodules, notes)))
+    print("\x1f".join(row))
 PY
 }
 
@@ -293,6 +332,37 @@ ensure_remotes() {
       git -C "$repo" remote add "$rname" "$url" && echo "  added remote '$rname' -> $url"
     fi
   done
+}
+
+# Sets the local user.name / user.email of a repo when unset; warns when they differ.
+# $1 repo dir, $2 name or "", $3 email or "", $4 label for messages ("" for the repo itself)
+set_identity() {
+  local dir="$1" uname="$2" uemail="$3" where="${4:+ (submodule $4)}" key val current
+  for key in name email; do
+    if [ "$key" = "name" ]; then val="$uname"; else val="$uemail"; fi
+    [ -n "$val" ] || continue
+    current="$(git -C "$dir" config --local --get "user.$key" 2>/dev/null || true)"
+    if [ -z "$current" ]; then
+      if [ "$dry_run" -eq 1 ]; then
+        echo "  would run: git config user.$key \"$val\"$where"
+      else
+        git -C "$dir" config --local "user.$key" "$val" && echo "  set user.$key = $val$where"
+      fi
+    elif [ "$current" != "$val" ]; then
+      echo "  warning: user.$key is '$current'$where, manifest says '$val' (left untouched)"
+    fi
+  done
+}
+
+# Applies the manifest identity to a repo and to every initialized submodule (each submodule has
+# its own config, so the superproject's user.* does not reach commits made inside it).
+ensure_identity() {
+  local repo="$1" uname="$2" uemail="$3" sub
+  [ -n "$uname$uemail" ] || return 0
+  set_identity "$repo" "$uname" "$uemail" ""
+  while IFS= read -r sub; do
+    [ -n "$sub" ] && set_identity "$repo/$sub" "$uname" "$uemail" "$sub"
+  done < <(git -C "$repo" submodule foreach --quiet --recursive 'echo "$displaypath"' 2>/dev/null || true)
 }
 
 # Initializes the submodules of an existing repo when any is still uninitialized ("-" in status).
@@ -377,7 +447,7 @@ case "$cmd" in
     printf '%-12s %-22s %-9s %-8s %-18s %s\n' "SECTION" "PROJECT" "STATUS" "REPO" "BRANCH" "PATH / NOTES"
     printf '%-12s %-22s %-9s %-8s %-18s %s\n' "-------" "-------" "------" "----" "------" "------------"
     found=0
-    while IFS=$'\x1f' read -r sec name st p p_exp remotes branch submodules notes; do
+    while IFS=$'\x1f' read -r sec name st p p_exp remotes branch submodules user_name user_email notes; do
       [ -n "$name" ] || continue
       found=1
       state="$(repo_state "$p_exp")"
@@ -395,7 +465,7 @@ case "$cmd" in
   paths)
     need_manifest
     rows="$(parse_projects)"
-    while IFS=$'\x1f' read -r sec name st p p_exp remotes branch submodules notes; do
+    while IFS=$'\x1f' read -r sec name st p p_exp remotes branch submodules user_name user_email notes; do
       [ -n "$p_exp" ] && [ -d "$p_exp" ] && git -C "$p_exp" rev-parse --git-dir >/dev/null 2>&1 && printf '%s\n' "$p_exp"
     done <<< "$rows"
     ;;
@@ -407,7 +477,7 @@ case "$cmd" in
     parse_projects check || rc=$?
     if [ "$rc" -eq 0 ]; then
       rows="$(parse_projects)"
-      while IFS=$'\x1f' read -r sec name st p p_exp remotes branch submodules notes; do
+      while IFS=$'\x1f' read -r sec name st p p_exp remotes branch submodules user_name user_email notes; do
         [ -n "$name" ] || continue
         [ "$(repo_state "$p_exp")" = "clean" ] || [ "$(repo_state "$p_exp")" = "dirty" ] || continue
         for kv in $remotes; do
@@ -423,6 +493,17 @@ case "$cmd" in
         elif [ "$submodules" = "1" ] && git -C "$p_exp" submodule status 2>/dev/null | grep -q '^-'; then
           echo "warning: $sec/$name: submodules not initialized (clone will run submodule update --init)"
         fi
+        for key in name email; do
+          if [ "$key" = "name" ]; then want="$user_name"; else want="$user_email"; fi
+          current="$(git -C "$p_exp" config --local --get "user.$key" 2>/dev/null || true)"
+          if [ -n "$want" ] && [ -z "$current" ]; then
+            echo "warning: $sec/$name: user.$key not set in the repo (clone will set it)"
+          elif [ -n "$want" ] && [ "$current" != "$want" ]; then
+            echo "warning: $sec/$name: user.$key is '$current', manifest says '$want'"
+          elif [ -z "$want" ] && [ -z "$(git -C "$p_exp" config --get "user.$key" 2>/dev/null || true)" ]; then
+            echo "warning: $sec/$name: no user.$key anywhere (add 'user:' to the project or the section's 'defaults:')"
+          fi
+        done
       done <<< "$rows"
       echo "ok"
     fi
@@ -435,7 +516,7 @@ case "$cmd" in
     rows="$(parse_projects)"
     echo "manifest: $MANIFEST"
     cloned=0; skipped=0; failed=0
-    while IFS=$'\x1f' read -r sec name st p p_exp remotes branch submodules notes; do
+    while IFS=$'\x1f' read -r sec name st p p_exp remotes branch submodules user_name user_email notes; do
       [ -n "$name" ] || continue
       label="$sec/$name"
       if [ -z "$p_exp" ]; then
@@ -453,6 +534,7 @@ case "$cmd" in
         if [ "$submodules" = "1" ]; then
           ensure_submodules "$p_exp" || failed=$((failed+1))
         fi
+        ensure_identity "$p_exp" "$user_name" "$user_email"
         skipped=$((skipped+1))
         continue
       fi
@@ -462,7 +544,9 @@ case "$cmd" in
           echo "[$label] adopting $p -> $origin_url"
           if [ "$dry_run" -eq 1 ]; then
             adopt_repo "$p_exp" "$remotes" "$branch"
+            [ -n "$user_name$user_email" ] && echo "  would set user.name / user.email from the manifest"
           elif adopt_repo "$p_exp" "$remotes" "$branch"; then
+            ensure_identity "$p_exp" "$user_name" "$user_email"
             cloned=$((cloned+1))
           else
             failed=$((failed+1))
@@ -484,6 +568,10 @@ case "$cmd" in
         echo "[$label] would run: git ${args[*]}"
         rest="${remotes#* }"
         [ "$rest" != "$remotes" ] && ensure_remotes "$p_exp" "$rest"
+        if [ -n "$user_name$user_email" ]; then
+          [ "$submodules" = "1" ] && sub_note=" (also in submodules)" || sub_note=""
+          echo "  would set user.name / user.email from the manifest$sub_note"
+        fi
         continue
       fi
       echo "[$label] cloning $origin_url -> $p"
@@ -491,12 +579,14 @@ case "$cmd" in
       errlog="$(mktemp "${TMPDIR:-/tmp}/git-projects.XXXXXX")"
       if GIT_TERMINAL_PROMPT=0 git "${args[@]}" 2>"$errlog"; then
         ensure_remotes "$p_exp" "$remotes"
+        ensure_identity "$p_exp" "$user_name" "$user_email"
         cloned=$((cloned+1))
       elif [ -n "$branch" ] && grep -q 'not found in upstream' "$errlog" \
           && [ -z "$(GIT_TERMINAL_PROMPT=0 git ls-remote --heads -- "$origin_url" 2>/dev/null)" ] \
           && GIT_TERMINAL_PROMPT=0 git "${args_nob[@]}" 2>/dev/null; then
         git -C "$p_exp" symbolic-ref HEAD "refs/heads/$branch"
         ensure_remotes "$p_exp" "$remotes"
+        ensure_identity "$p_exp" "$user_name" "$user_email"
         echo "  cloned empty repository; HEAD set to '$branch'. Commit and push when ready."
         cloned=$((cloned+1))
       else
