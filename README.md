@@ -9,8 +9,11 @@ Requires `git` and `python3` (3.9+, standard library only; both ship with the ma
 git clone <this-repo> ~/Documents/personal/git-projects-manager
 ~/Documents/personal/git-projects-manager/install.sh    # --dry-run to preview
 ```
-`install.sh` symlinks `bin/git-projects` into `~/.local/bin` and copies `templates/projects.yml` to
-`~/.config/git-projects/projects.yml` if no manifest exists yet.
+`install.sh` checks out `origin/main` (or local `main` without a remote) in a detached worktree at
+`~/.local/share/git-projects`, symlinks its `bin/git-projects` into `~/.local/bin` and copies
+`templates/projects.yml` to `~/.config/git-projects/projects.yml` if no manifest exists yet.
+The installed command always runs `main`, whatever branch the clone has checked out; re-run
+`install.sh` after merging to update it.
 
 ## Manifest
 Resolution order: `--file <yml>` → `$GIT_PROJECTS_FILE` → `~/.config/git-projects/projects.yml`.
