@@ -478,6 +478,8 @@ case "$cmd" in
       [ -n "$branch" ] && args+=(-b "$branch")
       [ "$submodules" = "1" ] && args+=(--recurse-submodules)
       args+=(-- "$origin_url" "$p_exp")
+      # fallback for an empty remote: -b fails there because no branch exists yet
+      args_nob=(clone --quiet -- "$origin_url" "$p_exp")
       if [ "$dry_run" -eq 1 ]; then
         echo "[$label] would run: git ${args[*]}"
         rest="${remotes#* }"
@@ -489,6 +491,13 @@ case "$cmd" in
       errlog="$(mktemp "${TMPDIR:-/tmp}/git-projects.XXXXXX")"
       if GIT_TERMINAL_PROMPT=0 git "${args[@]}" 2>"$errlog"; then
         ensure_remotes "$p_exp" "$remotes"
+        cloned=$((cloned+1))
+      elif [ -n "$branch" ] && grep -q 'not found in upstream' "$errlog" \
+          && [ -z "$(GIT_TERMINAL_PROMPT=0 git ls-remote --heads -- "$origin_url" 2>/dev/null)" ] \
+          && GIT_TERMINAL_PROMPT=0 git "${args_nob[@]}" 2>/dev/null; then
+        git -C "$p_exp" symbolic-ref HEAD "refs/heads/$branch"
+        ensure_remotes "$p_exp" "$remotes"
+        echo "  cloned empty repository; HEAD set to '$branch'. Commit and push when ready."
         cloned=$((cloned+1))
       else
         if grep -qiE 'authentication failed|could not read username|permission denied|publickey|terminal prompts disabled|403' "$errlog"; then
