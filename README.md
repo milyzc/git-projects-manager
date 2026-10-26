@@ -22,6 +22,10 @@ To share the registry with another tool that uses the same layout (e.g. ai-memor
 
 ```yaml
 work:
+  defaults:                               # reserved: not a project, inherited by the section
+    user:
+      name: Your Name
+      email: you@work.example
   project-a:
     path: ~/work/project-a               # required, ~ expanded
     remote: git@github.com:org/a.git     # single URL -> remote "origin"
@@ -35,7 +39,14 @@ personal:
       upstream: git@github.com:org/b.git  # added with `git remote add`
     branch: main                          # optional, passed as -b
     submodules: true                      # optional: --recurse-submodules on clone
+    user:                                 # optional, overrides the section defaults per key
+      email: you@personal.example
 ```
+`user:` (from the project, or the section's `defaults:`) is written as the local `user.name` /
+`user.email` of the repo and of every initialized submodule, so commits there never ask for an
+identity. `clone` sets it on new repos and on existing ones where it is unset; a different value
+already in a repo is left untouched with a warning. `check` reports missing or differing values.
+
 With `submodules: true`, `clone` passes `--recurse-submodules`; on a repo that already exists it
 runs `git submodule update --init --recursive` when any submodule is still uninitialized.
 `check` warns when a cloned repo has a `.gitmodules` but the manifest does not set the flag.
@@ -44,7 +55,7 @@ runs `git submodule update --init --recursive` when any submodule is still unini
 | command | what it does |
 |---|---|
 | `git projects list [--section s] [--status st]` | table with repo state (`missing`, `not-git`, `clean`, `dirty`), branch and ahead/behind (`+n -m`, no fetch) |
-| `git projects clone [--section s] [--status st] [--dry-run] [--adopt] [--protocol ssh\|https]` | clones every project whose path does not exist or is an empty directory; existing repos are skipped and only get missing remotes added. Skips `archived` by default. |
+| `git projects clone [--section s] [--status st] [--dry-run] [--adopt] [--protocol ssh\|https]` | clones every project whose path does not exist or is an empty directory; existing repos are skipped and only get missing remotes, submodules and `user:` identity added. Skips `archived` by default. |
 | `git projects paths [--section s] [--status st]` | one path per line for the repos present on disk (`for d in $(git projects paths); do ...`) |
 | `git projects check` | validates the manifest: syntax, required fields, duplicate paths, credentials in URLs, remote URL drift in cloned repos |
 | `git projects init` | creates the manifest from the template if it does not exist |
