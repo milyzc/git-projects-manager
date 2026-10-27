@@ -3,7 +3,8 @@
 # Manifest: --file <yml> | $GIT_PROJECTS_FILE | ~/.config/git-projects/projects.yml
 #
 # Usage:
-#   git projects [list]  [--section <sec>] [--status <st>] [--file <yml>]   table with repo state
+#   git projects [list]  [--section <sec>] [--status <st>] [--identity] [--file <yml>]   table with repo state
+#                        --identity: last column shows the user.name <user.email> each repo commits with
 #   git projects clone   [--section <sec>] [--status <st>] [--dry-run] [--adopt] [--protocol ssh|https] [--file <yml>]
 #                        --adopt: a path that already has files but no .git gets `git init` + the manifest
 #                        remotes, HEAD set to the remote branch and every local file kept for you to review
@@ -27,6 +28,7 @@ section=""
 status_filter=""
 dry_run=0
 adopt=0
+identity=0
 protocol=""
 
 die() { echo "git-projects: $1" >&2; exit "${2:-1}"; }
@@ -34,14 +36,15 @@ die() { echo "git-projects: $1" >&2; exit "${2:-1}"; }
 while [ $# -gt 0 ]; do
   case "$1" in
     list|clone|paths|check|init) cmd="$1"; shift ;;
-    help)         sed -n '2,17p' "$SELF" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    help)         sed -n '2,18p' "$SELF" | sed 's/^# \{0,1\}//'; exit 0 ;;
     -s|--section) [ -n "${2:-}" ] || die "--section needs a value" 2; section="$2"; shift 2 ;;
     --status)     [ -n "${2:-}" ] || die "--status needs a value" 2; status_filter="$2"; shift 2 ;;
     -f|--file)    [ -n "${2:-}" ] || die "--file needs a value" 2; MANIFEST="$2"; shift 2 ;;
     --protocol)   [ -n "${2:-}" ] || die "--protocol needs a value" 2; protocol="$2"; shift 2 ;;
     -n|--dry-run) dry_run=1; shift ;;
     --adopt)      adopt=1; shift ;;
-    -h|--help)    sed -n '2,17p' "$SELF" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    -i|--identity) identity=1; shift ;;
+    -h|--help)    sed -n '2,18p' "$SELF" | sed 's/^# \{0,1\}//'; exit 0 ;;
     -*)           die "unknown option: $1 (see: git projects help)" 2 ;;
     *)            die "unknown command: $1 (see: git projects help)" 2 ;;
   esac
@@ -318,6 +321,24 @@ branch_info() {
   printf '%s\n' "$br"
 }
 
+# Prints the identity a repo commits with as "name <email>", marking each part that is not in the
+# repo's local config "(global)" and each part that differs from the manifest with "!".
+# $1 repo path, $2 manifest name or "", $3 manifest email or ""
+identity_info() {
+  local repo="$1" key want val out=""
+  for key in name email; do
+    if [ "$key" = "name" ]; then want="$2"; else want="$3"; fi
+    val="$(git -C "$repo" config --local --get "user.$key" 2>/dev/null || true)"
+    if [ -z "$val" ]; then
+      val="$(git -C "$repo" config --get "user.$key" 2>/dev/null || true)"
+      [ -n "$val" ] && val="$val (global)" || val="(unset)"
+    fi
+    [ -n "$want" ] && [ "${val% (global)}" != "$want" ] && val="!$val"
+    if [ "$key" = "name" ]; then out="$val"; else out="$out <$val>"; fi
+  done
+  printf '%s\n' "$out"
+}
+
 # Adds the declared remotes that an existing repo lacks; warns when a URL differs.
 # $1 repo path, $2 "name=url name=url" (already protocol-rewritten)
 ensure_remotes() {
@@ -444,7 +465,9 @@ case "$cmd" in
     need_manifest
     rows="$(parse_projects)"
     echo "manifest: $MANIFEST"
-    printf '%-12s %-22s %-9s %-8s %-18s %s\n' "SECTION" "PROJECT" "STATUS" "REPO" "BRANCH" "PATH / NOTES"
+    last_col="PATH / NOTES"
+    [ "$identity" -eq 1 ] && last_col="USER"
+    printf '%-12s %-22s %-9s %-8s %-18s %s\n' "SECTION" "PROJECT" "STATUS" "REPO" "BRANCH" "$last_col"
     printf '%-12s %-22s %-9s %-8s %-18s %s\n' "-------" "-------" "------" "----" "------" "------------"
     found=0
     while IFS=$'\x1f' read -r sec name st p p_exp remotes branch submodules user_name user_email notes; do
@@ -454,12 +477,20 @@ case "$cmd" in
       br="-"
       case "$state" in clean|dirty) br="$(branch_info "$p_exp")" ;; esac
       [ -z "$remotes" ] && state="$state*"
-      tail_info="${p:-}"
-      [ -n "$notes" ] && tail_info="${tail_info:+$tail_info — }$notes"
+      if [ "$identity" -eq 1 ]; then
+        tail_info="-"
+        case "$state" in clean*|dirty*) tail_info="$(identity_info "$p_exp" "$user_name" "$user_email")" ;; esac
+      else
+        tail_info="${p:-}"
+        [ -n "$notes" ] && tail_info="${tail_info:+$tail_info — }$notes"
+      fi
       printf '%-12s %-22s %-9s %-8s %-18s %s\n' "$sec" "$name" "$st" "$state" "$br" "$tail_info"
     done <<< "$rows"
     [ "$found" -eq 1 ] || echo "(no projects matched)"
     echo "(* = no remote declared)"
+    if [ "$identity" -eq 1 ]; then
+      echo "(USER: (global) = not set in the repo, inherited from your git config; ! = differs from the manifest)"
+    fi
     ;;
 
   paths)

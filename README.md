@@ -54,7 +54,7 @@ runs `git submodule update --init --recursive` when any submodule is still unini
 ## Commands
 | command | what it does |
 |---|---|
-| `git projects list [--section s] [--status st]` | table with repo state (`missing`, `not-git`, `clean`, `dirty`), branch and ahead/behind (`+n -m`, no fetch) |
+| `git projects list [--section s] [--status st] [--identity]` | table with repo state (`missing`, `not-git`, `clean`, `dirty`), branch and ahead/behind (`+n -m`, no fetch). `--identity` (`-i`) swaps the path column for the `name <email>` each repo commits with: `(global)` marks a value inherited from your git config, `!` one that differs from the manifest, `(unset)` a missing one |
 | `git projects clone [--section s] [--status st] [--dry-run] [--adopt] [--protocol ssh\|https]` | clones every project whose path does not exist or is an empty directory; existing repos are skipped and only get missing remotes, submodules and `user:` identity added. Skips `archived` by default. |
 | `git projects paths [--section s] [--status st]` | one path per line for the repos present on disk (`for d in $(git projects paths); do ...`) |
 | `git projects check` | validates the manifest: syntax, required fields, duplicate paths, credentials in URLs, remote URL drift in cloned repos |
