@@ -7,8 +7,10 @@ ones. Repositories that already exist are left alone. Works as a git subcommand:
 Requires `git` and `python3` (3.9+, standard library only; both ship with the macOS CLT).
 ```sh
 git clone <this-repo> ~/Documents/personal/git-projects-manager
-~/Documents/personal/git-projects-manager/install.sh    # --dry-run to preview
+~/Documents/personal/git-projects-manager/install.sh    # --dry-run to preview, --bin-dir <dir> to link elsewhere
 ```
+The manifest is read with PyYAML when it is installed; otherwise a built-in parser is used, which
+only understands nested `key: value` mappings (no lists, no `{}` / `[]` flow syntax, no multi-line values).
 `install.sh` checks out `origin/main` (or local `main` without a remote) in a detached worktree at
 `~/.local/share/git-projects`, symlinks its `bin/git-projects` into `~/.local/bin` and copies
 `templates/projects.yml` to `~/.config/git-projects/projects.yml` if no manifest exists yet.
@@ -28,7 +30,8 @@ work:
       email: you@work.example
   project-a:
     path: ~/work/project-a               # required, ~ expanded
-    remote: git@github.com:org/a.git     # single URL -> remote "origin"
+    remote: git@github.com:org/a.git     # single URL -> remote "origin"; optional: without it the
+                                          # project is listed but never cloned
     status: active                        # active (default) | paused | archived
     notes: Main service
 personal:
@@ -54,12 +57,15 @@ runs `git submodule update --init --recursive` when any submodule is still unini
 ## Commands
 | command | what it does |
 |---|---|
-| `git projects list [--section s] [--status st] [--identity]` | table with repo state (`missing`, `not-git`, `clean`, `dirty`), branch and ahead/behind (`+n -m`, no fetch). `--identity` (`-i`) swaps the path column for the `name <email>` each repo commits with: `(global)` marks a value inherited from your git config, `!` one that differs from the manifest, `(unset)` a missing one |
+| `git projects [list] [--section s] [--status st] [--identity]` | the default command. Table with repo state (`missing`, `not-git`, `clean`, `dirty`, `no-path`; a trailing `*` means no remote declared), branch and ahead/behind (`+n -m`, no fetch). `--identity` (`-i`) swaps the path column for the `name <email>` each repo commits with: `(global)` marks a value inherited from your git config, `!` one that differs from the manifest, `(unset)` a missing one |
 | `git projects clone [--section s] [--status st] [--dry-run] [--adopt] [--protocol ssh\|https]` | clones every project whose path does not exist or is an empty directory; existing repos are skipped and only get missing remotes, submodules and `user:` identity added. Skips `archived` by default. |
 | `git projects paths [--section s] [--status st]` | one path per line for the repos present on disk (`for d in $(git projects paths); do ...`) |
-| `git projects check` | validates the manifest: syntax, required fields, duplicate paths, credentials in URLs, remote URL drift in cloned repos |
+| `git projects check` | validates the manifest: syntax, required fields, duplicate paths, credentials in URLs. On cloned repos it also warns about remote URL drift, remotes not yet added, uninitialized submodules and missing or differing `user.name` / `user.email` |
 | `git projects init` | creates the manifest from the template if it does not exist |
 | `git projects help` (or `-h`) | usage summary. `git projects --help` does not work: git intercepts `--help` and looks for a man page |
+
+Every command accepts `--file <yml>` (`-f`). Short forms: `-s` for `--section`, `-n` for `--dry-run`,
+`-i` for `--identity`. `--status` takes `active`, `paused`, `archived` or `all`.
 
 A path that already holds files but no `.git` is reported as an error and left alone. With
 `--adopt`, `clone` turns it into a repo instead: `git init`, the manifest remotes, a fetch, and HEAD
@@ -68,11 +74,14 @@ stays as it is. `git status` in that repo then shows how the local files differ 
 you decide what to commit. If the remote has no commits yet, the repo is just initialized with its
 remotes for you to commit and push.
 
+When the remote is empty and the project declares `branch:`, a plain `git clone -b` would fail; `clone`
+then clones without `-b` and points HEAD at that branch, ready for the first commit and push.
+
 `--protocol` rewrites GitHub/GitLab style URLs on the fly (`git@host:org/repo.git` ⇄
 `https://host/org/repo.git`) for a machine that has no ssh key, without editing the manifest.
 
 Exit codes: `0` ok, `1` something failed (a clone, a check error), `2` bad usage, `3` a remote in
-the manifest carries credentials.
+the manifest carries credentials (`list`, `clone`, `paths`; `check` reports it as an error and exits `1`).
 
 ## Security
 - The manifest holds paths and public-looking URLs only. Credentials never belong in it:
