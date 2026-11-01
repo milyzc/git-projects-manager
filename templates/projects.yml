@@ -12,8 +12,15 @@
 #   submodules: true | false (default). true clones with --recurse-submodules and, on a repo that
 #            already exists, runs `git submodule update --init --recursive` if any is missing.
 #   status:  active (default) | paused | archived. `clone` skips archived unless --status says otherwise.
-#   user:    name / email written to the repo's local git config (and each submodule's) on clone,
-#            so commits do not ask for an identity. Optional; either key may be omitted.
+#   user:    identity and commit signing written to the repo's local git config (and each
+#            submodule's) on clone. Optional; every key may be omitted:
+#              name, email   -> user.name, user.email
+#              signingkey    -> user.signingkey: ssh: a PUBLIC key (.pub file or "key::ssh-ed25519 ...");
+#                               openpgp / x509: the key ID or fingerprint (format: is then required)
+#              sign: true    -> commit.gpgsign + tag.gpgsign
+#              format        -> gpg.format: ssh (default) | openpgp | x509
+#            Machine-wide settings such as gpg.ssh.program (e.g. 1Password's op-ssh-sign) belong
+#            in your global git config, not here.
 #   notes:   short description (optional).
 # Section defaults: a `defaults:` entry inside a section is not a project; its `user:` applies to
 # every project of the section, and a project's own `user:` overrides it key by key.
@@ -28,6 +35,8 @@ work:
   #   user:
   #     name: Your Name
   #     email: you@work.example
+  #     signingkey: ~/.ssh/work_signing.pub
+  #     sign: true
   # project-a:
   #   path: ~/work/project-a
   #   remote: git@github.com:org/project-a.git

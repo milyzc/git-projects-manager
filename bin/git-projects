@@ -4,7 +4,8 @@
 #
 # Usage:
 #   git projects [list]  [--section <sec>] [--status <st>] [--identity] [--file <yml>]   table with repo state
-#                        --identity: last column shows the user.name <user.email> each repo commits with
+#                        --identity: last column shows the user.name <user.email> each repo commits with,
+#                        plus [signed] when commits are signed
 #   git projects clone   [--section <sec>] [--status <st>] [--dry-run] [--adopt] [--protocol ssh|https] [--file <yml>]
 #                        --adopt: a path that already has files but no .git gets `git init` + the manifest
 #                        remotes, HEAD set to the remote branch and every local file kept for you to review
@@ -36,7 +37,7 @@ die() { echo "git-projects: $1" >&2; exit "${2:-1}"; }
 while [ $# -gt 0 ]; do
   case "$1" in
     list|clone|paths|check|init) cmd="$1"; shift ;;
-    help)         sed -n '2,18p' "$SELF" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    help)         sed -n '2,19p' "$SELF" | sed 's/^# \{0,1\}//'; exit 0 ;;
     -s|--section) [ -n "${2:-}" ] || die "--section needs a value" 2; section="$2"; shift 2 ;;
     --status)     [ -n "${2:-}" ] || die "--status needs a value" 2; status_filter="$2"; shift 2 ;;
     -f|--file)    [ -n "${2:-}" ] || die "--file needs a value" 2; MANIFEST="$2"; shift 2 ;;
@@ -44,7 +45,7 @@ while [ $# -gt 0 ]; do
     -n|--dry-run) dry_run=1; shift ;;
     --adopt)      adopt=1; shift ;;
     -i|--identity) identity=1; shift ;;
-    -h|--help)    sed -n '2,18p' "$SELF" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    -h|--help)    sed -n '2,19p' "$SELF" | sed 's/^# \{0,1\}//'; exit 0 ;;
     -*)           die "unknown option: $1 (see: git projects help)" 2 ;;
     *)            die "unknown command: $1 (see: git projects help)" 2 ;;
   esac
@@ -66,9 +67,11 @@ need_manifest() {
 
 # Parses the manifest and prints one row per project, fields separated by \x1f (a tab separator
 # would make bash `read` collapse empty fields):
-#   section  name  status  path  path_expanded  remotes  branch  submodules  user_name  user_email  notes
+#   section  name  status  path  path_expanded  remotes  branch  submodules  gitcfg  notes
 # `remotes` is "name=url name=url" with origin first. Exits 3 if a remote carries credentials.
-# user_name / user_email come from the project's `user:`, falling back to the section's `defaults: user:`.
+# `gitcfg` is the local git config to write: "key=value" pairs separated by \x1e (user.name,
+# user.email, user.signingkey, gpg.format, commit.gpgsign, tag.gpgsign). It comes from the
+# project's `user:`, falling back key by key to the section's `defaults: user:`.
 # In check mode it prints every problem found and exits 1 on errors.
 parse_projects() {
   python3 - "$MANIFEST" "$section" "$status_filter" "${1:-rows}" <<'PY'
@@ -141,29 +144,104 @@ errors, warnings = [], []
 def err(msg): errors.append(msg)
 def warn(msg): warnings.append(msg)
 
+USER_KEYS = ("name", "email", "signingkey", "sign", "format")
+SIGN_FORMATS = ("ssh", "openpgp", "x509")
+BOOLS = {"true": "true", "yes": "true", "1": "true", "false": "false", "no": "false", "0": "false"}
+
 def parse_user(raw, label):
-    """Returns {"name": ..., "email": ...} with only the keys that are set."""
+    """Returns the `user:` keys that are set (name, email, signingkey, sign, format), validated."""
     if raw is None or raw == "" or raw == {}:
         return {}
     if not isinstance(raw, dict):
-        err(f"{label}: 'user' must be a mapping with name and/or email")
+        err(f"{label}: 'user' must be a mapping ({', '.join(USER_KEYS)})")
         return {}
     out = {}
-    for key in ("name", "email"):
-        val = str(raw.get(key, "") or "").strip()
+    for key in USER_KEYS:
+        val = raw.get(key, "")
+        val = "" if val is None else str(val).strip()  # PyYAML gives a bool for `sign: true`
         if not val:
             continue
-        if "\n" in val or "\x1f" in val:
+        if "\n" in val or "\x1f" in val or "\x1e" in val:
             err(f"{label}: user.{key} must be a single line")
             continue
         if key == "email" and ("@" not in val or any(ch.isspace() for ch in val)):
             err(f"{label}: user.email '{val}' is not an email address")
             continue
+        if key == "sign":
+            if val.lower() not in BOOLS:
+                err(f"{label}: user.sign must be true or false")
+                continue
+            val = BOOLS[val.lower()]
+        if key == "format":
+            val = val.lower()
+            if val not in SIGN_FORMATS:
+                err(f"{label}: user.format must be one of {', '.join(SIGN_FORMATS)}")
+                continue
         out[key] = val
     for key in raw:
-        if str(key) not in ("name", "email"):
-            warn(f"{label}: unknown key 'user.{key}' (expected name, email)")
+        if str(key) not in USER_KEYS:
+            warn(f"{label}: unknown key 'user.{key}' (expected {', '.join(USER_KEYS)})")
     return out
+
+_gpg_cache = {}
+def gpg_key_problem(key, fmt):
+    """Returns why a gpg/gpgsm signing key is unusable on this machine, or None. Best effort:
+    when the program is not installed it says so instead of failing."""
+    import shutil, subprocess
+    if (key, fmt) in _gpg_cache:
+        return _gpg_cache[(key, fmt)]
+    # same program git would run: gpg.<fmt>.program, then gpg.program (openpgp only), then the default
+    prog = ""
+    for cfg_key in ([f"gpg.{fmt}.program", "gpg.program"] if fmt == "openpgp" else [f"gpg.{fmt}.program"]):
+        try:
+            prog = subprocess.run(["git", "config", "--get", cfg_key], capture_output=True,
+                                  text=True, timeout=10).stdout.strip()
+        except (OSError, subprocess.SubprocessError):
+            prog = ""
+        if prog:
+            break
+    prog = prog or ("gpg" if fmt == "openpgp" else "gpgsm")
+    if not shutil.which(prog):
+        result = f"{prog} not found, cannot sign with {fmt} on this machine"
+    else:
+        try:
+            ok = subprocess.run([prog, "--batch", "--list-secret-keys", "--", key],
+                                capture_output=True, timeout=10).returncode == 0
+            result = None if ok else f"no secret key for it in {prog}"
+        except (OSError, subprocess.SubprocessError) as exc:
+            result = f"could not query {prog}: {exc}"
+    _gpg_cache[(key, fmt)] = result
+    return result
+
+def git_config(user, label):
+    """Turns a merged `user:` mapping into the local git config pairs to write."""
+    pairs = [(f"user.{k}", user[k]) for k in ("name", "email") if k in user]
+    key, sign, fmt = user.get("signingkey", ""), user.get("sign", ""), user.get("format", "")
+    explicit_fmt = bool(fmt)
+    if key or sign == "true":
+        fmt = fmt or "ssh"
+    if key and fmt == "ssh" and not key.startswith("key::"):
+        key = os.path.expanduser(key)
+        if not key.endswith(".pub"):
+            # never point the config at a private key: only the public half belongs here
+            hint = "" if explicit_fmt else " (for a GPG key ID add 'format: openpgp')"
+            err(f"{label}: user.signingkey must be a public key file (.pub) or 'key::<public key>' for ssh{hint}")
+            key = ""
+        elif mode == "check" and not os.path.isfile(key):
+            warn(f"{label}: user.signingkey {key} does not exist")
+    elif key and mode == "check" and fmt in ("openpgp", "x509"):
+        problem = gpg_key_problem(key, fmt)
+        if problem:
+            warn(f"{label}: user.signingkey {key}: {problem}")
+    if key:
+        pairs.append(("user.signingkey", key))
+    elif sign == "true" and fmt == "ssh":
+        warn(f"{label}: user.sign is true but there is no user.signingkey (ssh signing needs one)")
+    if fmt:
+        pairs.append(("gpg.format", fmt))
+    if sign:
+        pairs += [("commit.gpgsign", sign), ("tag.gpgsign", sign)]
+    return "\x1e".join(f"{k}={v}" for k, v in pairs)
 
 if not os.path.isfile(path):
     print(f"git-projects: manifest {path} not found", file=sys.stderr)
@@ -256,9 +334,9 @@ for sec, projs in data.items():
             err(f"{label}: 'submodules' must be true or false")
         submodules = "1" if sub_raw in ("true", "1", "yes") else "0"
         user = {**sec_user, **parse_user(cfg.get("user"), label)}
+        gitcfg = git_config(user, label)
         notes = str(cfg.get("notes", "") or "").replace("\t", " ").replace("\n", " ").strip()
-        rows.append((sec, name, st, p, p_exp, " ".join(clean), branch, submodules,
-                     user.get("name", ""), user.get("email", ""), notes))
+        rows.append((sec, name, st, p, p_exp, " ".join(clean), branch, submodules, gitcfg, notes))
 
 if mode == "check":
     for m in errors:
@@ -321,21 +399,50 @@ branch_info() {
   printf '%s\n' "$br"
 }
 
+# Prints the "key=value" pairs of a gitcfg field (\x1e separated), one per line.
+cfg_pairs() { [ -n "$1" ] && printf '%s\n' "$1" | tr '\036' '\n'; return 0; }
+
+# Prints the manifest value of one git config key from a gitcfg field, or nothing.
+# $1 gitcfg, $2 key (e.g. user.email)
+cfg_get() {
+  local kv
+  while IFS= read -r kv; do
+    [ "${kv%%=*}" = "$2" ] && { printf '%s\n' "${kv#*=}"; return 0; }
+  done < <(cfg_pairs "$1")
+  return 0
+}
+
+# Reads a git config key of a repo; booleans normalized so "yes" / "on" compare equal to "true".
+# $1 repo dir, $2 key, $3 scope flag ("--local" or "")
+git_cfg_read() {
+  local type=""
+  case "$2" in *.gpgsign) type="--type=bool" ;; esac
+  git -C "$1" config ${3:+"$3"} $type --get "$2" 2>/dev/null || true
+}
+
 # Prints the identity a repo commits with as "name <email>", marking each part that is not in the
-# repo's local config "(global)" and each part that differs from the manifest with "!".
-# $1 repo path, $2 manifest name or "", $3 manifest email or ""
+# repo's local config "(global)" and each part that differs from the manifest with "!". Appends
+# "[signed]" when commit.gpgsign is on, or "[!signed]" / "[!unsigned]" when it differs from the manifest.
+# $1 repo path, $2 gitcfg
 identity_info() {
-  local repo="$1" key want val out=""
+  local repo="$1" key want val out="" sign
   for key in name email; do
-    if [ "$key" = "name" ]; then want="$2"; else want="$3"; fi
-    val="$(git -C "$repo" config --local --get "user.$key" 2>/dev/null || true)"
+    want="$(cfg_get "$2" "user.$key")"
+    val="$(git_cfg_read "$repo" "user.$key" --local)"
     if [ -z "$val" ]; then
-      val="$(git -C "$repo" config --get "user.$key" 2>/dev/null || true)"
+      val="$(git_cfg_read "$repo" "user.$key")"
       [ -n "$val" ] && val="$val (global)" || val="(unset)"
     fi
     [ -n "$want" ] && [ "${val% (global)}" != "$want" ] && val="!$val"
     if [ "$key" = "name" ]; then out="$val"; else out="$out <$val>"; fi
   done
+  want="$(cfg_get "$2" commit.gpgsign)"
+  sign="$(git_cfg_read "$repo" commit.gpgsign)"
+  if [ -n "$want" ] && [ "${sign:-false}" != "$want" ]; then
+    [ "$want" = "true" ] && out="$out [!unsigned]" || out="$out [!signed]"
+  elif [ "$sign" = "true" ]; then
+    out="$out [signed]"
+  fi
   printf '%s\n' "$out"
 }
 
@@ -355,36 +462,40 @@ ensure_remotes() {
   done
 }
 
-# Sets the local user.name / user.email of a repo when unset; warns when they differ.
-# $1 repo dir, $2 name or "", $3 email or "", $4 label for messages ("" for the repo itself)
+# Writes each manifest git config key (identity and signing) to a repo's local config when unset;
+# warns when a different value is already there.
+# $1 repo dir, $2 gitcfg, $3 label for messages ("" for the repo itself)
 set_identity() {
-  local dir="$1" uname="$2" uemail="$3" where="${4:+ (submodule $4)}" key val current
-  for key in name email; do
-    if [ "$key" = "name" ]; then val="$uname"; else val="$uemail"; fi
-    [ -n "$val" ] || continue
-    current="$(git -C "$dir" config --local --get "user.$key" 2>/dev/null || true)"
+  local dir="$1" where="${3:+ (submodule $3)}" kv key val current
+  while IFS= read -r kv; do
+    key="${kv%%=*}"; val="${kv#*=}"
+    current="$(git_cfg_read "$dir" "$key" --local)"
     if [ -z "$current" ]; then
       if [ "$dry_run" -eq 1 ]; then
-        echo "  would run: git config user.$key \"$val\"$where"
+        echo "  would run: git config $key \"$val\"$where"
       else
-        git -C "$dir" config --local "user.$key" "$val" && echo "  set user.$key = $val$where"
+        git -C "$dir" config --local "$key" "$val" && echo "  set $key = $val$where"
       fi
     elif [ "$current" != "$val" ]; then
-      echo "  warning: user.$key is '$current'$where, manifest says '$val' (left untouched)"
+      echo "  warning: $key is '$current'$where, manifest says '$val' (left untouched)"
     fi
-  done
+  done < <(cfg_pairs "$2")
 }
 
-# Applies the manifest identity to a repo and to every initialized submodule (each submodule has
-# its own config, so the superproject's user.* does not reach commits made inside it).
+# Applies the manifest identity and signing config to a repo and to every initialized submodule
+# (each submodule has its own config, so the superproject's settings do not reach commits made inside it).
+# $1 repo path, $2 gitcfg
 ensure_identity() {
-  local repo="$1" uname="$2" uemail="$3" sub
-  [ -n "$uname$uemail" ] || return 0
-  set_identity "$repo" "$uname" "$uemail" ""
+  local repo="$1" sub
+  [ -n "$2" ] || return 0
+  set_identity "$repo" "$2" ""
   while IFS= read -r sub; do
-    [ -n "$sub" ] && set_identity "$repo/$sub" "$uname" "$uemail" "$sub"
+    [ -n "$sub" ] && set_identity "$repo/$sub" "$2" "$sub"
   done < <(git -C "$repo" submodule foreach --quiet --recursive 'echo "$displaypath"' 2>/dev/null || true)
 }
+
+# One line for dry-run output: which git config keys clone would set. $1 gitcfg
+cfg_keys() { cfg_pairs "$1" | sed 's/=.*//' | paste -sd ',' - | sed 's/,/, /g'; }
 
 # Initializes the submodules of an existing repo when any is still uninitialized ("-" in status).
 ensure_submodules() {
@@ -470,7 +581,7 @@ case "$cmd" in
     printf '%-12s %-22s %-9s %-8s %-18s %s\n' "SECTION" "PROJECT" "STATUS" "REPO" "BRANCH" "$last_col"
     printf '%-12s %-22s %-9s %-8s %-18s %s\n' "-------" "-------" "------" "----" "------" "------------"
     found=0
-    while IFS=$'\x1f' read -r sec name st p p_exp remotes branch submodules user_name user_email notes; do
+    while IFS=$'\x1f' read -r sec name st p p_exp remotes branch submodules gitcfg notes; do
       [ -n "$name" ] || continue
       found=1
       state="$(repo_state "$p_exp")"
@@ -479,7 +590,7 @@ case "$cmd" in
       [ -z "$remotes" ] && state="$state*"
       if [ "$identity" -eq 1 ]; then
         tail_info="-"
-        case "$state" in clean*|dirty*) tail_info="$(identity_info "$p_exp" "$user_name" "$user_email")" ;; esac
+        case "$state" in clean*|dirty*) tail_info="$(identity_info "$p_exp" "$gitcfg")" ;; esac
       else
         tail_info="${p:-}"
         [ -n "$notes" ] && tail_info="${tail_info:+$tail_info — }$notes"
@@ -489,14 +600,15 @@ case "$cmd" in
     [ "$found" -eq 1 ] || echo "(no projects matched)"
     echo "(* = no remote declared)"
     if [ "$identity" -eq 1 ]; then
-      echo "(USER: (global) = not set in the repo, inherited from your git config; ! = differs from the manifest)"
+      echo "(USER: (global) = not set in the repo, inherited from your git config; ! = differs from the manifest;"
+      echo " [signed] = commit.gpgsign on)"
     fi
     ;;
 
   paths)
     need_manifest
     rows="$(parse_projects)"
-    while IFS=$'\x1f' read -r sec name st p p_exp remotes branch submodules user_name user_email notes; do
+    while IFS=$'\x1f' read -r sec name st p p_exp remotes branch submodules gitcfg notes; do
       [ -n "$p_exp" ] && [ -d "$p_exp" ] && git -C "$p_exp" rev-parse --git-dir >/dev/null 2>&1 && printf '%s\n' "$p_exp"
     done <<< "$rows"
     ;;
@@ -508,7 +620,7 @@ case "$cmd" in
     parse_projects check || rc=$?
     if [ "$rc" -eq 0 ]; then
       rows="$(parse_projects)"
-      while IFS=$'\x1f' read -r sec name st p p_exp remotes branch submodules user_name user_email notes; do
+      while IFS=$'\x1f' read -r sec name st p p_exp remotes branch submodules gitcfg notes; do
         [ -n "$name" ] || continue
         [ "$(repo_state "$p_exp")" = "clean" ] || [ "$(repo_state "$p_exp")" = "dirty" ] || continue
         for kv in $remotes; do
@@ -524,15 +636,18 @@ case "$cmd" in
         elif [ "$submodules" = "1" ] && git -C "$p_exp" submodule status 2>/dev/null | grep -q '^-'; then
           echo "warning: $sec/$name: submodules not initialized (clone will run submodule update --init)"
         fi
-        for key in name email; do
-          if [ "$key" = "name" ]; then want="$user_name"; else want="$user_email"; fi
-          current="$(git -C "$p_exp" config --local --get "user.$key" 2>/dev/null || true)"
-          if [ -n "$want" ] && [ -z "$current" ]; then
-            echo "warning: $sec/$name: user.$key not set in the repo (clone will set it)"
-          elif [ -n "$want" ] && [ "$current" != "$want" ]; then
-            echo "warning: $sec/$name: user.$key is '$current', manifest says '$want'"
-          elif [ -z "$want" ] && [ -z "$(git -C "$p_exp" config --get "user.$key" 2>/dev/null || true)" ]; then
-            echo "warning: $sec/$name: no user.$key anywhere (add 'user:' to the project or the section's 'defaults:')"
+        while IFS= read -r kv; do
+          key="${kv%%=*}"; want="${kv#*=}"
+          current="$(git_cfg_read "$p_exp" "$key" --local)"
+          if [ -z "$current" ]; then
+            echo "warning: $sec/$name: $key not set in the repo (clone will set it)"
+          elif [ "$current" != "$want" ]; then
+            echo "warning: $sec/$name: $key is '$current', manifest says '$want'"
+          fi
+        done < <(cfg_pairs "$gitcfg")
+        for key in user.name user.email; do
+          if [ -z "$(cfg_get "$gitcfg" "$key")" ] && [ -z "$(git_cfg_read "$p_exp" "$key")" ]; then
+            echo "warning: $sec/$name: no $key anywhere (add 'user:' to the project or the section's 'defaults:')"
           fi
         done
       done <<< "$rows"
@@ -547,7 +662,7 @@ case "$cmd" in
     rows="$(parse_projects)"
     echo "manifest: $MANIFEST"
     cloned=0; skipped=0; failed=0
-    while IFS=$'\x1f' read -r sec name st p p_exp remotes branch submodules user_name user_email notes; do
+    while IFS=$'\x1f' read -r sec name st p p_exp remotes branch submodules gitcfg notes; do
       [ -n "$name" ] || continue
       label="$sec/$name"
       if [ -z "$p_exp" ]; then
@@ -565,7 +680,7 @@ case "$cmd" in
         if [ "$submodules" = "1" ]; then
           ensure_submodules "$p_exp" || failed=$((failed+1))
         fi
-        ensure_identity "$p_exp" "$user_name" "$user_email"
+        ensure_identity "$p_exp" "$gitcfg"
         skipped=$((skipped+1))
         continue
       fi
@@ -575,9 +690,9 @@ case "$cmd" in
           echo "[$label] adopting $p -> $origin_url"
           if [ "$dry_run" -eq 1 ]; then
             adopt_repo "$p_exp" "$remotes" "$branch"
-            [ -n "$user_name$user_email" ] && echo "  would set user.name / user.email from the manifest"
+            [ -n "$gitcfg" ] && echo "  would set from the manifest: $(cfg_keys "$gitcfg")"
           elif adopt_repo "$p_exp" "$remotes" "$branch"; then
-            ensure_identity "$p_exp" "$user_name" "$user_email"
+            ensure_identity "$p_exp" "$gitcfg"
             cloned=$((cloned+1))
           else
             failed=$((failed+1))
@@ -599,9 +714,9 @@ case "$cmd" in
         echo "[$label] would run: git ${args[*]}"
         rest="${remotes#* }"
         [ "$rest" != "$remotes" ] && ensure_remotes "$p_exp" "$rest"
-        if [ -n "$user_name$user_email" ]; then
+        if [ -n "$gitcfg" ]; then
           [ "$submodules" = "1" ] && sub_note=" (also in submodules)" || sub_note=""
-          echo "  would set user.name / user.email from the manifest$sub_note"
+          echo "  would set from the manifest$sub_note: $(cfg_keys "$gitcfg")"
         fi
         continue
       fi
@@ -610,14 +725,14 @@ case "$cmd" in
       errlog="$(mktemp "${TMPDIR:-/tmp}/git-projects.XXXXXX")"
       if GIT_TERMINAL_PROMPT=0 git "${args[@]}" 2>"$errlog"; then
         ensure_remotes "$p_exp" "$remotes"
-        ensure_identity "$p_exp" "$user_name" "$user_email"
+        ensure_identity "$p_exp" "$gitcfg"
         cloned=$((cloned+1))
       elif [ -n "$branch" ] && grep -q 'not found in upstream' "$errlog" \
           && [ -z "$(GIT_TERMINAL_PROMPT=0 git ls-remote --heads -- "$origin_url" 2>/dev/null)" ] \
           && GIT_TERMINAL_PROMPT=0 git "${args_nob[@]}" 2>/dev/null; then
         git -C "$p_exp" symbolic-ref HEAD "refs/heads/$branch"
         ensure_remotes "$p_exp" "$remotes"
-        ensure_identity "$p_exp" "$user_name" "$user_email"
+        ensure_identity "$p_exp" "$gitcfg"
         echo "  cloned empty repository; HEAD set to '$branch'. Commit and push when ready."
         cloned=$((cloned+1))
       else
