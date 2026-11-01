@@ -28,6 +28,9 @@ work:
     user:
       name: Your Name
       email: you@work.example
+      signingkey: ~/.ssh/work_signing.pub # optional: public key file, or "key::ssh-ed25519 AAAA..."
+      sign: true                          # optional: commit.gpgsign + tag.gpgsign
+      format: ssh                         # optional: ssh (default) | openpgp | x509
   project-a:
     path: ~/work/project-a               # required, ~ expanded
     remote: git@github.com:org/a.git     # single URL -> remote "origin"; optional: without it the
@@ -45,10 +48,29 @@ personal:
     user:                                 # optional, overrides the section defaults per key
       email: you@personal.example
 ```
-`user:` (from the project, or the section's `defaults:`) is written as the local `user.name` /
-`user.email` of the repo and of every initialized submodule, so commits there never ask for an
-identity. `clone` sets it on new repos and on existing ones where it is unset; a different value
+`user:` (from the project, or the section's `defaults:`) is written to the local git config of the
+repo and of every initialized submodule, so commits there never ask for an identity and are signed
+with the right key:
+
+| `user:` key | local git config |
+|---|---|
+| `name`, `email` | `user.name`, `user.email` |
+| `signingkey` | `user.signingkey` (`~` expanded) |
+| `format` | `gpg.format`; defaults to `ssh` when `signingkey` or `sign: true` is set |
+| `sign` | `commit.gpgsign` and `tag.gpgsign` |
+
+`clone` sets each key on new repos and on existing ones where it is unset; a different value
 already in a repo is left untouched with a warning. `check` reports missing or differing values.
+For ssh, `signingkey` must be a `.pub` file or `key::<public key>`: a private key path is rejected.
+`sign: true` without `signingkey` is only a warning, because your global config may provide the key.
+
+Machine-wide settings stay in your global config, not in the manifest. With 1Password as the
+signer, for example:
+```sh
+git config --global gpg.ssh.program /Applications/1Password.app/Contents/MacOS/op-ssh-sign
+```
+The `.pub` file only has to hold the public key (1Password: copy it from the key item). To verify
+signatures locally (`git log --show-signature`), also set `gpg.ssh.allowedSignersFile`.
 
 With `submodules: true`, `clone` passes `--recurse-submodules`; on a repo that already exists it
 runs `git submodule update --init --recursive` when any submodule is still uninitialized.
@@ -57,10 +79,10 @@ runs `git submodule update --init --recursive` when any submodule is still unini
 ## Commands
 | command | what it does |
 |---|---|
-| `git projects [list] [--section s] [--status st] [--identity]` | the default command. Table with repo state (`missing`, `not-git`, `clean`, `dirty`, `no-path`; a trailing `*` means no remote declared), branch and ahead/behind (`+n -m`, no fetch). `--identity` (`-i`) swaps the path column for the `name <email>` each repo commits with: `(global)` marks a value inherited from your git config, `!` one that differs from the manifest, `(unset)` a missing one |
-| `git projects clone [--section s] [--status st] [--dry-run] [--adopt] [--protocol ssh\|https]` | clones every project whose path does not exist or is an empty directory; existing repos are skipped and only get missing remotes, submodules and `user:` identity added. Skips `archived` by default. |
+| `git projects [list] [--section s] [--status st] [--identity]` | the default command. Table with repo state (`missing`, `not-git`, `clean`, `dirty`, `no-path`; a trailing `*` means no remote declared), branch and ahead/behind (`+n -m`, no fetch). `--identity` (`-i`) swaps the path column for the `name <email>` each repo commits with: `(global)` marks a value inherited from your git config, `!` one that differs from the manifest, `(unset)` a missing one. `[signed]` means `commit.gpgsign` is on; `[!signed]` / `[!unsigned]` that it differs from the manifest's `sign:` |
+| `git projects clone [--section s] [--status st] [--dry-run] [--adopt] [--protocol ssh\|https]` | clones every project whose path does not exist or is an empty directory; existing repos are skipped and only get missing remotes, submodules and `user:` identity / signing config added. Skips `archived` by default. |
 | `git projects paths [--section s] [--status st]` | one path per line for the repos present on disk (`for d in $(git projects paths); do ...`) |
-| `git projects check` | validates the manifest: syntax, required fields, duplicate paths, credentials in URLs. On cloned repos it also warns about remote URL drift, remotes not yet added, uninitialized submodules and missing or differing `user.name` / `user.email` |
+| `git projects check` | validates the manifest: syntax, required fields, duplicate paths, credentials in URLs. On cloned repos it also warns about remote URL drift, remotes not yet added, uninitialized submodules and missing or differing identity / signing config. It also rejects a private key as `signingkey` and warns when the key file does not exist |
 | `git projects init` | creates the manifest from the template if it does not exist |
 | `git projects help` (or `-h`) | usage summary. `git projects --help` does not work: git intercepts `--help` and looks for a man page |
 
