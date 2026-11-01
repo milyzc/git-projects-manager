@@ -183,20 +183,56 @@ def parse_user(raw, label):
             warn(f"{label}: unknown key 'user.{key}' (expected {', '.join(USER_KEYS)})")
     return out
 
+_gpg_cache = {}
+def gpg_key_problem(key, fmt):
+    """Returns why a gpg/gpgsm signing key is unusable on this machine, or None. Best effort:
+    when the program is not installed it says so instead of failing."""
+    import shutil, subprocess
+    if (key, fmt) in _gpg_cache:
+        return _gpg_cache[(key, fmt)]
+    # same program git would run: gpg.<fmt>.program, then gpg.program (openpgp only), then the default
+    prog = ""
+    for cfg_key in ([f"gpg.{fmt}.program", "gpg.program"] if fmt == "openpgp" else [f"gpg.{fmt}.program"]):
+        try:
+            prog = subprocess.run(["git", "config", "--get", cfg_key], capture_output=True,
+                                  text=True, timeout=10).stdout.strip()
+        except (OSError, subprocess.SubprocessError):
+            prog = ""
+        if prog:
+            break
+    prog = prog or ("gpg" if fmt == "openpgp" else "gpgsm")
+    if not shutil.which(prog):
+        result = f"{prog} not found, cannot sign with {fmt} on this machine"
+    else:
+        try:
+            ok = subprocess.run([prog, "--batch", "--list-secret-keys", "--", key],
+                                capture_output=True, timeout=10).returncode == 0
+            result = None if ok else f"no secret key for it in {prog}"
+        except (OSError, subprocess.SubprocessError) as exc:
+            result = f"could not query {prog}: {exc}"
+    _gpg_cache[(key, fmt)] = result
+    return result
+
 def git_config(user, label):
     """Turns a merged `user:` mapping into the local git config pairs to write."""
     pairs = [(f"user.{k}", user[k]) for k in ("name", "email") if k in user]
     key, sign, fmt = user.get("signingkey", ""), user.get("sign", ""), user.get("format", "")
+    explicit_fmt = bool(fmt)
     if key or sign == "true":
         fmt = fmt or "ssh"
     if key and fmt == "ssh" and not key.startswith("key::"):
         key = os.path.expanduser(key)
         if not key.endswith(".pub"):
             # never point the config at a private key: only the public half belongs here
-            err(f"{label}: user.signingkey must be a public key file (.pub) or 'key::<public key>' for ssh")
+            hint = "" if explicit_fmt else " (for a GPG key ID add 'format: openpgp')"
+            err(f"{label}: user.signingkey must be a public key file (.pub) or 'key::<public key>' for ssh{hint}")
             key = ""
         elif mode == "check" and not os.path.isfile(key):
             warn(f"{label}: user.signingkey {key} does not exist")
+    elif key and mode == "check" and fmt in ("openpgp", "x509"):
+        problem = gpg_key_problem(key, fmt)
+        if problem:
+            warn(f"{label}: user.signingkey {key}: {problem}")
     if key:
         pairs.append(("user.signingkey", key))
     elif sign == "true" and fmt == "ssh":

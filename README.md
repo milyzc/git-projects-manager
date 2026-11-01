@@ -64,6 +64,18 @@ already in a repo is left untouched with a warning. `check` reports missing or d
 For ssh, `signingkey` must be a `.pub` file or `key::<public key>`: a private key path is rejected.
 `sign: true` without `signingkey` is only a warning, because your global config may provide the key.
 
+GPG works the same way with `format: openpgp` (or `x509` for gpgsm) and the key ID or fingerprint
+as `signingkey`; `format:` is required there, since the default is ssh:
+```yaml
+user:
+  signingkey: 3AA5C34371567BD2
+  sign: true
+  format: openpgp
+```
+`check` asks `gpg --list-secret-keys` (or `gpgsm`, or the program set in `gpg.program` /
+`gpg.<format>.program`) whether the secret key is on this machine, and warns if it is not or the
+program is missing.
+
 Machine-wide settings stay in your global config, not in the manifest. With 1Password as the
 signer, for example:
 ```sh
@@ -82,7 +94,7 @@ runs `git submodule update --init --recursive` when any submodule is still unini
 | `git projects [list] [--section s] [--status st] [--identity]` | the default command. Table with repo state (`missing`, `not-git`, `clean`, `dirty`, `no-path`; a trailing `*` means no remote declared), branch and ahead/behind (`+n -m`, no fetch). `--identity` (`-i`) swaps the path column for the `name <email>` each repo commits with: `(global)` marks a value inherited from your git config, `!` one that differs from the manifest, `(unset)` a missing one. `[signed]` means `commit.gpgsign` is on; `[!signed]` / `[!unsigned]` that it differs from the manifest's `sign:` |
 | `git projects clone [--section s] [--status st] [--dry-run] [--adopt] [--protocol ssh\|https]` | clones every project whose path does not exist or is an empty directory; existing repos are skipped and only get missing remotes, submodules and `user:` identity / signing config added. Skips `archived` by default. |
 | `git projects paths [--section s] [--status st]` | one path per line for the repos present on disk (`for d in $(git projects paths); do ...`) |
-| `git projects check` | validates the manifest: syntax, required fields, duplicate paths, credentials in URLs. On cloned repos it also warns about remote URL drift, remotes not yet added, uninitialized submodules and missing or differing identity / signing config. It also rejects a private key as `signingkey` and warns when the key file does not exist |
+| `git projects check` | validates the manifest: syntax, required fields, duplicate paths, credentials in URLs. On cloned repos it also warns about remote URL drift, remotes not yet added, uninitialized submodules and missing or differing identity / signing config. It also rejects a private key as `signingkey` and warns when the ssh key file does not exist or the gpg secret key is not on this machine |
 | `git projects init` | creates the manifest from the template if it does not exist |
 | `git projects help` (or `-h`) | usage summary. `git projects --help` does not work: git intercepts `--help` and looks for a man page |
 

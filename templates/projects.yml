@@ -15,7 +15,8 @@
 #   user:    identity and commit signing written to the repo's local git config (and each
 #            submodule's) on clone. Optional; every key may be omitted:
 #              name, email   -> user.name, user.email
-#              signingkey    -> user.signingkey: a PUBLIC key (.pub file or "key::ssh-ed25519 ...")
+#              signingkey    -> user.signingkey: ssh: a PUBLIC key (.pub file or "key::ssh-ed25519 ...");
+#                               openpgp / x509: the key ID or fingerprint (format: is then required)
 #              sign: true    -> commit.gpgsign + tag.gpgsign
 #              format        -> gpg.format: ssh (default) | openpgp | x509
 #            Machine-wide settings such as gpg.ssh.program (e.g. 1Password's op-ssh-sign) belong
