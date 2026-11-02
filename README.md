@@ -88,13 +88,35 @@ With `submodules: true`, `clone` passes `--recurse-submodules`; on a repo that a
 runs `git submodule update --init --recursive` when any submodule is still uninitialized.
 `check` warns when a cloned repo has a `.gitmodules` but the manifest does not set the flag.
 
+### Identity in submodules
+Each submodule has its own config (`<repo>/.git/modules/<sub>/config`), so the repo's local
+`user.*` does not reach it. `clone` writes the identity into the submodules that exist at that
+moment, but a submodule initialized later (a pull that brings a new one, `git submodule update
+--init`) would have none, and git then commits as `you@your-hostname.local` without asking.
+
+For repos with submodules (`submodules: true` or a `.gitmodules` file), `clone` therefore also:
+1. writes the `user:` config to `~/.config/git-projects/identity/<section>-<project>.gitconfig`;
+2. adds `[includeIf "gitdir:<repo path>/"] path = <that file>` to
+   `~/.config/git-projects/includes.gitconfig`, a file owned by this tool;
+3. adds `include.path = ~/.config/git-projects/includes.gitconfig` to your global git config, once.
+   Nothing else in your global config is changed.
+
+The git dir of every submodule and worktree lives under `<repo>/.git/`, so that include covers the
+repo, all its submodules (current and future) and its worktrees. Local values still win, so a
+submodule with a different `user.email` keeps it and `check` warns. `check` reports a missing
+include and, for each initialized submodule, any key whose effective value differs from the
+manifest; `list -i` marks such a repo with `!sub`.
+
+To make git refuse to commit anywhere it has no identity, instead of inventing one:
+`git config --global user.useConfigOnly true`.
+
 ## Commands
 | command | what it does |
 |---|---|
-| `git projects [list] [--section s] [--status st] [--identity]` | the default command. Table with repo state (`missing`, `not-git`, `clean`, `dirty`, `no-path`; a trailing `*` means no remote declared), branch and ahead/behind (`+n -m`, no fetch). `--identity` (`-i`) swaps the path column for the `name <email>` each repo commits with: `(global)` marks a value inherited from your git config, `!` one that differs from the manifest, `(unset)` a missing one. `[signed]` means `commit.gpgsign` is on; `[!signed]` / `[!unsigned]` that it differs from the manifest's `sign:` |
+| `git projects [list] [--section s] [--status st] [--identity]` | the default command. Table with repo state (`missing`, `not-git`, `clean`, `dirty`, `no-path`; a trailing `*` means no remote declared), branch and ahead/behind (`+n -m`, no fetch). `--identity` (`-i`) swaps the path column for the `name <email>` each repo commits with: `(global)` marks a value inherited from your git config, `!` one that differs from the manifest, `(unset)` a missing one. `[signed]` means `commit.gpgsign` is on; `[!signed]` / `[!unsigned]` that it differs from the manifest's `sign:`; `!sub` that a submodule would commit with other values (details in `check`) |
 | `git projects clone [--section s] [--status st] [--dry-run] [--adopt] [--protocol ssh\|https]` | clones every project whose path does not exist or is an empty directory; existing repos are skipped and only get missing remotes, submodules and `user:` identity / signing config added. Skips `archived` by default. |
 | `git projects paths [--section s] [--status st]` | one path per line for the repos present on disk (`for d in $(git projects paths); do ...`) |
-| `git projects check` | validates the manifest: syntax, required fields, duplicate paths, credentials in URLs. On cloned repos it also warns about remote URL drift, remotes not yet added, uninitialized submodules and missing or differing identity / signing config. It also rejects a private key as `signingkey` and warns when the ssh key file does not exist or the gpg secret key is not on this machine |
+| `git projects check` | validates the manifest: syntax, required fields, duplicate paths, credentials in URLs. On cloned repos it also warns about remote URL drift, remotes not yet added, uninitialized submodules and missing or differing identity / signing config, in the repo and in each initialized submodule, plus a missing submodule identity include. It also rejects a private key as `signingkey` and warns when the ssh key file does not exist or the gpg secret key is not on this machine |
 | `git projects init` | creates the manifest from the template if it does not exist |
 | `git projects help` (or `-h`) | usage summary. `git projects --help` does not work: git intercepts `--help` and looks for a man page |
 
