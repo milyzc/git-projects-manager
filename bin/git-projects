@@ -22,6 +22,9 @@ set -euo pipefail
 SELF="$(python3 -c 'import os,sys; print(os.path.realpath(sys.argv[1]))' "${BASH_SOURCE[0]}")"
 ROOT="$(cd "$(dirname "$SELF")/.." && pwd -P)"
 DEFAULT_FILE="$HOME/.config/git-projects/projects.yml"
+# identity includes for repos with submodules (see ensure_include)
+IDENTITY_DIR="$HOME/.config/git-projects/identity"
+INCLUDES_FILE="$HOME/.config/git-projects/includes.gitconfig"
 MANIFEST="${GIT_PROJECTS_FILE:-$DEFAULT_FILE}"
 
 cmd="list"
@@ -484,14 +487,71 @@ set_identity() {
 
 # Applies the manifest identity and signing config to a repo and to every initialized submodule
 # (each submodule has its own config, so the superproject's settings do not reach commits made inside it).
-# $1 repo path, $2 gitcfg
+# Repos with submodules also get a conditional include (see ensure_include), which covers submodules
+# initialized later as well.
+# $1 repo path, $2 gitcfg, $3 section, $4 project, $5 submodules flag ("1" or "0")
 ensure_identity() {
   local repo="$1" sub
   [ -n "$2" ] || return 0
   set_identity "$repo" "$2" ""
   while IFS= read -r sub; do
     [ -n "$sub" ] && set_identity "$repo/$sub" "$2" "$sub"
-  done < <(git -C "$repo" submodule foreach --quiet --recursive 'echo "$displaypath"' 2>/dev/null || true)
+  done < <(list_submodules "$repo")
+  if [ "${5:-0}" = "1" ] || [ -f "$repo/.gitmodules" ]; then
+    ensure_include "$repo" "$2" "$3" "$4"
+  fi
+}
+
+# True when every initialized submodule would commit with the manifest values. $1 repo, $2 gitcfg
+submodules_match() {
+  local sub kv
+  while IFS= read -r sub; do
+    [ -n "$sub" ] || continue
+    while IFS= read -r kv; do
+      [ "$(git_cfg_read "$1/$sub" "${kv%%=*}")" = "${kv#*=}" ] || return 1
+    done < <(cfg_pairs "$2")
+  done < <(list_submodules "$1")
+  return 0
+}
+
+# Initialized submodules of a repo (recursive), one display path per line.
+list_submodules() {
+  git -C "$1" submodule foreach --quiet --recursive 'echo "$displaypath"' 2>/dev/null || true
+}
+
+# The git dir of every submodule lives under <repo>/.git/modules/, so a global
+# `includeIf "gitdir:<repo>/"` reaches the repo, its submodules (current and future) and its
+# worktrees. The identity goes to IDENTITY_DIR/<section>-<project>.gitconfig, the includeIf entries
+# to INCLUDES_FILE (owned by this tool), and the global config only gets `include.path = INCLUDES_FILE`.
+include_file_for() { printf '%s/%s.gitconfig\n' "$IDENTITY_DIR" "$(printf '%s-%s' "$1" "$2" | tr -c 'A-Za-z0-9._-' '_')"; }
+include_key_for() { printf 'includeIf.gitdir:%s/.path\n' "$(cd "$1" && pwd -P)"; }
+
+# $1 repo path, $2 gitcfg, $3 section, $4 project
+ensure_include() {
+  local repo="$1" gitcfg="$2" file key tmp kv
+  file="$(include_file_for "$3" "$4")"
+  key="$(include_key_for "$repo")"
+  if [ "$dry_run" -eq 1 ]; then
+    echo "  would write $file and include it for everything under $repo (submodules included)"
+    return 0
+  fi
+  mkdir -p "$IDENTITY_DIR"
+  tmp="$file.tmp.$$"
+  rm -f "$tmp"
+  while IFS= read -r kv; do
+    git config -f "$tmp" "${kv%%=*}" "${kv#*=}"
+  done < <(cfg_pairs "$gitcfg")
+  if [ -f "$file" ] && cmp -s "$tmp" "$file"; then
+    rm -f "$tmp"
+  else
+    mv "$tmp" "$file" && echo "  wrote $file"
+  fi
+  if [ "$(git config -f "$INCLUDES_FILE" --get "$key" 2>/dev/null || true)" != "$file" ]; then
+    git config -f "$INCLUDES_FILE" "$key" "$file" && echo "  included it for everything under $repo (submodules included)"
+  fi
+  if ! git config --global --get-all include.path 2>/dev/null | grep -qxF "$INCLUDES_FILE"; then
+    git config --global --add include.path "$INCLUDES_FILE" && echo "  added include.path = $INCLUDES_FILE to your global git config"
+  fi
 }
 
 # One line for dry-run output: which git config keys clone would set. $1 gitcfg
@@ -590,7 +650,11 @@ case "$cmd" in
       [ -z "$remotes" ] && state="$state*"
       if [ "$identity" -eq 1 ]; then
         tail_info="-"
-        case "$state" in clean*|dirty*) tail_info="$(identity_info "$p_exp" "$gitcfg")" ;; esac
+        case "$state" in clean*|dirty*)
+          tail_info="$(identity_info "$p_exp" "$gitcfg")"
+          [ -n "$gitcfg" ] && ! submodules_match "$p_exp" "$gitcfg" && tail_info="$tail_info !sub"
+          ;;
+        esac
       else
         tail_info="${p:-}"
         [ -n "$notes" ] && tail_info="${tail_info:+$tail_info — }$notes"
@@ -601,7 +665,7 @@ case "$cmd" in
     echo "(* = no remote declared)"
     if [ "$identity" -eq 1 ]; then
       echo "(USER: (global) = not set in the repo, inherited from your git config; ! = differs from the manifest;"
-      echo " [signed] = commit.gpgsign on)"
+      echo " [signed] = commit.gpgsign on; !sub = a submodule commits with something else, see: git projects check)"
     fi
     ;;
 
@@ -650,6 +714,26 @@ case "$cmd" in
             echo "warning: $sec/$name: no $key anywhere (add 'user:' to the project or the section's 'defaults:')"
           fi
         done
+        if [ -n "$gitcfg" ] && { [ "$submodules" = "1" ] || [ -f "$p_exp/.gitmodules" ]; }; then
+          inc_file="$(include_file_for "$sec" "$name")"
+          if [ "$(git config -f "$INCLUDES_FILE" --get "$(include_key_for "$p_exp")" 2>/dev/null || true)" != "$inc_file" ] \
+              || ! git config --global --get-all include.path 2>/dev/null | grep -qxF "$INCLUDES_FILE"; then
+            echo "warning: $sec/$name: no identity include for its submodules (clone will add it)"
+          fi
+          # what a commit inside each submodule would actually use (local, include or global)
+          while IFS= read -r sub; do
+            [ -n "$sub" ] || continue
+            while IFS= read -r kv; do
+              key="${kv%%=*}"; want="${kv#*=}"
+              current="$(git_cfg_read "$p_exp/$sub" "$key")"
+              if [ -z "$current" ]; then
+                echo "warning: $sec/$name: submodule $sub: $key not set (clone will set it)"
+              elif [ "$current" != "$want" ]; then
+                echo "warning: $sec/$name: submodule $sub: $key is '$current', manifest says '$want'"
+              fi
+            done < <(cfg_pairs "$gitcfg")
+          done < <(list_submodules "$p_exp")
+        fi
       done <<< "$rows"
       echo "ok"
     fi
@@ -680,7 +764,7 @@ case "$cmd" in
         if [ "$submodules" = "1" ]; then
           ensure_submodules "$p_exp" || failed=$((failed+1))
         fi
-        ensure_identity "$p_exp" "$gitcfg"
+        ensure_identity "$p_exp" "$gitcfg" "$sec" "$name" "$submodules"
         skipped=$((skipped+1))
         continue
       fi
@@ -692,7 +776,7 @@ case "$cmd" in
             adopt_repo "$p_exp" "$remotes" "$branch"
             [ -n "$gitcfg" ] && echo "  would set from the manifest: $(cfg_keys "$gitcfg")"
           elif adopt_repo "$p_exp" "$remotes" "$branch"; then
-            ensure_identity "$p_exp" "$gitcfg"
+            ensure_identity "$p_exp" "$gitcfg" "$sec" "$name" "$submodules"
             cloned=$((cloned+1))
           else
             failed=$((failed+1))
@@ -725,14 +809,14 @@ case "$cmd" in
       errlog="$(mktemp "${TMPDIR:-/tmp}/git-projects.XXXXXX")"
       if GIT_TERMINAL_PROMPT=0 git "${args[@]}" 2>"$errlog"; then
         ensure_remotes "$p_exp" "$remotes"
-        ensure_identity "$p_exp" "$gitcfg"
+        ensure_identity "$p_exp" "$gitcfg" "$sec" "$name" "$submodules"
         cloned=$((cloned+1))
       elif [ -n "$branch" ] && grep -q 'not found in upstream' "$errlog" \
           && [ -z "$(GIT_TERMINAL_PROMPT=0 git ls-remote --heads -- "$origin_url" 2>/dev/null)" ] \
           && GIT_TERMINAL_PROMPT=0 git "${args_nob[@]}" 2>/dev/null; then
         git -C "$p_exp" symbolic-ref HEAD "refs/heads/$branch"
         ensure_remotes "$p_exp" "$remotes"
-        ensure_identity "$p_exp" "$gitcfg"
+        ensure_identity "$p_exp" "$gitcfg" "$sec" "$name" "$submodules"
         echo "  cloned empty repository; HEAD set to '$branch'. Commit and push when ready."
         cloned=$((cloned+1))
       else
