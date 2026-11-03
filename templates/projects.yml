@@ -11,6 +11,8 @@
 #   branch:  branch to check out on clone (optional, `-b`).
 #   submodules: true | false (default). true clones with --recurse-submodules and, on a repo that
 #            already exists, runs `git submodule update --init --recursive` if any is missing.
+#            Repos with submodules also get their `user:` through a global includeIf on their
+#            path, so submodules initialized later commit with it too (see README).
 #   status:  active (default) | paused | archived. `clone` skips archived unless --status says otherwise.
 #   user:    identity and commit signing written to the repo's local git config (and each
 #            submodule's) on clone. Optional; every key may be omitted:
