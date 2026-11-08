@@ -515,8 +515,32 @@ submodules_match() {
 }
 
 # Initialized submodules of a repo (recursive), one display path per line.
+# Reads the gitlinks from the index instead of `git submodule foreach`, which aborts at the first
+# gitlink without a .gitmodules entry and would hide every submodule after it.
+# $1 repo dir, $2 path prefix (internal, for recursion)
 list_submodules() {
-  git -C "$1" submodule foreach --quiet --recursive 'echo "$displaypath"' 2>/dev/null || true
+  local entry path
+  while IFS= read -r -d '' entry; do
+    [ "${entry%% *}" = "160000" ] || continue
+    path="${entry#*$'\t'}"
+    [ -e "$1/$path/.git" ] || continue
+    echo "${2:-}$path"
+    list_submodules "$1/$path" "${2:-}$path/"
+  done < <(git -C "$1" ls-files -s -z 2>/dev/null)
+}
+
+# Gitlinks of a repo and its initialized submodules (recursive) with no entry in the .gitmodules
+# of the repo that holds them, one path per line. `git submodule` commands fail where one exists.
+# $1 repo dir, $2 path prefix (internal, for recursion)
+unmapped_gitlinks() {
+  local entry path mapped
+  mapped="$(git -C "$1" config -f .gitmodules --get-regexp '^submodule\..*\.path$' 2>/dev/null | cut -d' ' -f2- || true)"
+  while IFS= read -r -d '' entry; do
+    [ "${entry%% *}" = "160000" ] || continue
+    path="${entry#*$'\t'}"
+    printf '%s\n' "$mapped" | grep -qxF -- "$path" || echo "${2:-}$path"
+    if [ -e "$1/$path/.git" ]; then unmapped_gitlinks "$1/$path" "${2:-}$path/"; fi
+  done < <(git -C "$1" ls-files -s -z 2>/dev/null)
 }
 
 # The git dir of every submodule lives under <repo>/.git/modules/, so a global
@@ -700,6 +724,9 @@ case "$cmd" in
         elif [ "$submodules" = "1" ] && git -C "$p_exp" submodule status 2>/dev/null | grep -q '^-'; then
           echo "warning: $sec/$name: submodules not initialized (clone will run submodule update --init)"
         fi
+        while IFS= read -r sub; do
+          echo "warning: $sec/$name: submodule $sub has no .gitmodules entry (git submodule commands fail; add it to .gitmodules or 'git rm --cached' it)"
+        done < <(unmapped_gitlinks "$p_exp")
         while IFS= read -r kv; do
           key="${kv%%=*}"; want="${kv#*=}"
           current="$(git_cfg_read "$p_exp" "$key" --local)"

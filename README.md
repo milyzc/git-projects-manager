@@ -104,7 +104,9 @@ For repos with submodules (`submodules: true` or a `.gitmodules` file), `clone` 
 The git dir of every submodule and worktree lives under `<repo>/.git/`, so that include covers the
 repo, all its submodules (current and future) and its worktrees. Local values still win, so a
 submodule with a different `user.email` keeps it and `check` warns. `check` reports a missing
-include and, for each initialized submodule, any key whose effective value differs from the
+include, a gitlink with no `.gitmodules` entry (it makes `git submodule` commands fail; the
+submodules are listed from the index, so the others still get their config) and, for each
+initialized submodule, any key whose effective value differs from the
 manifest; `list -i` marks such a repo with `!sub`.
 
 To make git refuse to commit anywhere it has no identity, instead of inventing one:
