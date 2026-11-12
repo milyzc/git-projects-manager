@@ -5,31 +5,46 @@ ones. Repositories that already exist are left alone. Works as a git subcommand:
 
 ## Install
 Requires `git` and `python3` (3.9+, standard library only; both ship with the macOS CLT).
+Pick one of the two options; both give the same result.
 
-Without cloning (also needs `curl` and `tar`):
+**Option 1: without cloning** (also needs `curl` and `tar`):
 ```sh
 curl -fsSL https://raw.githubusercontent.com/milyzc/git-projects-manager/main/install.sh | bash
-# options go after `bash -s --`: --ref <branch|tag>, --dry-run, --bin-dir <dir>
-curl -fsSL https://raw.githubusercontent.com/milyzc/git-projects-manager/main/install.sh | bash -s -- --dry-run
 ```
-This downloads the tarball of `<ref>` (default `main`) from GitHub into `~/.local/share/git-projects`,
-replaces the previous copy only once the download is complete, and records the ref in
-`.installed-ref` there. Run the same line again to update. `GIT_PROJECTS_REPO=<owner>/<repo>`
-installs from a fork.
+Options go after `bash -s --`, e.g. `... | bash -s -- --dry-run`:
+`--ref <branch|tag>` (default `main`), `--dry-run`, `--bin-dir <dir>`.
+`GIT_PROJECTS_REPO=<owner>/<repo>` installs from a fork.
 
-From a clone (for development), wherever you want it:
+**Option 2: from a clone** (for development), in any directory you choose:
 ```sh
-git clone https://github.com/milyzc/git-projects-manager.git <dir>
-<dir>/install.sh    # --dry-run to preview, --bin-dir <dir> to link elsewhere
+git clone https://github.com/milyzc/git-projects-manager.git <clone-dir>
+<clone-dir>/install.sh    # --dry-run to preview, --bin-dir <dir> to link elsewhere
 ```
+
+**What gets installed** (either option):
+- the code, in `~/.local/share/git-projects`;
+- the command `~/.local/bin/git-projects`, a symlink into it, so `git projects` works;
+- the manifest `~/.config/git-projects/projects.yml`, copied from `templates/projects.yml`
+  only if no manifest exists yet (an existing one is never touched).
+
+If `~/.local/bin` is not in your `PATH`, the installer prints the line to add to your shell rc
+(`~/.zshrc`). Then check that it works:
+```sh
+git projects list
+```
+
+**Update**: run the same install command again.
+- Without cloning, the tarball of `<ref>` is downloaded and replaces the previous copy only once
+  the download is complete; the installed ref is recorded in `~/.local/share/git-projects/.installed-ref`.
+- From a clone, `install.sh` checks out `origin/main` (or local `main` without a remote) in a
+  detached worktree, so the installed command always runs `main`, whatever branch the clone has
+  checked out. Re-run it after merging.
+
+The two options do not mix: to switch from one to the other, remove `~/.local/share/git-projects`
+first (the installer says so).
+
 The manifest is read with PyYAML when it is installed; otherwise a built-in parser is used, which
 only understands nested `key: value` mappings (no lists, no `{}` / `[]` flow syntax, no multi-line values).
-From a clone, `install.sh` checks out `origin/main` (or local `main` without a remote) in a detached worktree at
-`~/.local/share/git-projects`, symlinks its `bin/git-projects` into `~/.local/bin` and copies
-`templates/projects.yml` to `~/.config/git-projects/projects.yml` if no manifest exists yet.
-The installed command always runs `main`, whatever branch the clone has checked out; re-run
-`install.sh` after merging to update it. The two modes do not mix: switching between them
-requires removing `~/.local/share/git-projects` first (the installer says so).
 
 ## Manifest
 Resolution order: `--file <yml>` → `$GIT_PROJECTS_FILE` → `~/.config/git-projects/projects.yml`.
