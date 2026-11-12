@@ -17,10 +17,10 @@ replaces the previous copy only once the download is complete, and records the r
 `.installed-ref` there. Run the same line again to update. `GIT_PROJECTS_REPO=<owner>/<repo>`
 installs from a fork.
 
-From a clone (for development):
+From a clone (for development), wherever you want it:
 ```sh
-git clone <this-repo> ~/Documents/personal/git-projects-manager
-~/Documents/personal/git-projects-manager/install.sh    # --dry-run to preview, --bin-dir <dir> to link elsewhere
+git clone https://github.com/milyzc/git-projects-manager.git <dir>
+<dir>/install.sh    # --dry-run to preview, --bin-dir <dir> to link elsewhere
 ```
 The manifest is read with PyYAML when it is installed; otherwise a built-in parser is used, which
 only understands nested `key: value` mappings (no lists, no `{}` / `[]` flow syntax, no multi-line values).
