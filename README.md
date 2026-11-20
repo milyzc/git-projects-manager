@@ -1,7 +1,79 @@
 # git-projects-manager
 
-Keeps a registry of the git repositories on this machine in one YAML file and clones the missing
-ones. Repositories that already exist are left alone. Works as a git subcommand: `git projects`.
+[![CI](https://github.com/milyzc/git-projects-manager/actions/workflows/ci.yml/badge.svg)](https://github.com/milyzc/git-projects-manager/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+[![Release](https://img.shields.io/github/v/release/milyzc/git-projects-manager)](https://github.com/milyzc/git-projects-manager/releases)
+
+**All your git projects in one portable file. Keep it in your vault; rebuild any machine with one command.**
+
+Sooner or later you set up a machine from scratch: a new laptop, a reinstall, a broken or stolen one.
+Then you have to remember every repository, where it lived, its remotes, and which name, email and
+signing key you commit with in each. `git-projects` keeps all of that in one small YAML file. The
+file holds no secrets, so it fits next to your SSH keys in 1Password, Bitwarden or an `age`-encrypted
+file. On the new machine you restore it and run `git projects clone`.
+
+- **One file, every repo**: path, remotes, branch, submodules, status, grouped in sections (`work`, `personal`...).
+- **Safe to re-run**: missing repos are cloned, existing ones are never overwritten.
+- **Right identity everywhere**: per-section `user.name` / `user.email` / signing key written to each
+  repo and its submodules, so nothing commits as `you@your-hostname.local`.
+- **No dependencies**: `git` and `python3` (standard library). Works as a git subcommand: `git projects`.
+
+## Rebuild a machine from scratch
+```sh
+# 1. install the tool
+curl -fsSL https://raw.githubusercontent.com/milyzc/git-projects-manager/main/install.sh | bash
+
+# 2. restore the manifest from your vault (pick yours)
+op document get projects.yml --out-file ~/.config/git-projects/projects.yml       # 1Password
+bw get attachment projects.yml --itemid <item-id> --output ~/.config/git-projects/projects.yml  # Bitwarden
+age -d -o ~/.config/git-projects/projects.yml projects.yml.age                    # age file
+
+# 3. validate it, then clone everything that is missing
+git projects check
+git projects clone            # --protocol https if this machine has no ssh key yet (gh auth login)
+git projects list -i          # every repo, its state and who you commit as
+```
+
+```text
+$ git projects clone
+[work/api] cloning git@github.com:acme/api.git -> ~/work/api
+  set user.name = Ada Lovelace
+  set user.email = ada@work.example
+[work/web] cloning git@github.com:acme/web.git -> ~/work/web
+  set user.name = Ada Lovelace
+  set user.email = ada@work.example
+[personal/dotfiles] cloning git@github.com:ada/dotfiles.git -> ~/personal/dotfiles
+  set user.email = ada@personal.example
+cloned: 3  skipped: 0  failed: 0
+
+$ git projects list -i
+SECTION      PROJECT                STATUS    REPO     BRANCH             USER
+-------      -------                ------    ----     ------             ------------
+work         api                    active    clean    main               Ada Lovelace <ada@work.example>
+work         web                    active    dirty    main               Ada Lovelace <ada@work.example>
+personal     dotfiles               active    clean    main               Ada (global) <ada@personal.example>
+personal     side-project           paused    missing  -                  -
+```
+
+The manifest is the source of truth, so save it back to the vault whenever you add a project:
+```sh
+op document edit projects.yml ~/.config/git-projects/projects.yml                 # 1Password
+bw create attachment --file ~/.config/git-projects/projects.yml --itemid <item-id>  # Bitwarden (delete the old one)
+age -p -o projects.yml.age ~/.config/git-projects/projects.yml                    # age, passphrase
+```
+The file can also live anywhere else you sync (a private dotfiles repo, a synced folder): point
+`GIT_PROJECTS_FILE` at it.
+
+## First time
+```sh
+git projects init             # creates ~/.config/git-projects/projects.yml from the template
+$EDITOR ~/.config/git-projects/projects.yml
+git projects check && git projects clone
+```
+Then store the file in your vault (`op document create ~/.config/git-projects/projects.yml --title projects.yml`,
+a Bitwarden attachment, or `age -p`).
+
+<!-- demo: docs/demo.gif (record with vhs or asciinema) -->
 
 ## Install
 Requires `git` and `python3` (3.9+, standard library only; both ship with the macOS CLT).
@@ -149,6 +221,7 @@ To make git refuse to commit anywhere it has no identity, instead of inventing o
 | `git projects paths [--section s] [--status st]` | one path per line for the repos present on disk (`for d in $(git projects paths); do ...`) |
 | `git projects check` | validates the manifest: syntax, required fields, duplicate paths, credentials in URLs. On cloned repos it also warns about remote URL drift, remotes not yet added, uninitialized submodules and missing or differing identity / signing config, in the repo and in each initialized submodule, plus a missing submodule identity include. It also rejects a private key as `signingkey` and warns when the ssh key file does not exist or the gpg secret key is not on this machine |
 | `git projects init` | creates the manifest from the template if it does not exist |
+| `git projects version` (or `--version`, `-V`) | prints the version |
 | `git projects help` (or `-h`) | usage summary. `git projects --help` does not work: git intercepts `--help` and looks for a man page |
 
 Every command accepts `--file <yml>` (`-f`). Short forms: `-s` for `--section`, `-n` for `--dry-run`,
@@ -180,3 +253,14 @@ the manifest carries credentials (`list`, `clone`, `paths`; `check` reports it a
 - The real manifest lives outside this repository (`~/.config/git-projects/`); `.gitignore`
   blocks a stray copy at the repo root. Only the commented template is versioned.
 - Nothing is logged or stored by the tool itself.
+
+## Contributing
+Issues and pull requests are welcome. Before opening a PR:
+```sh
+tests/smoke.sh                                       # offline, uses a throwaway $HOME
+shellcheck -S warning bin/git-projects install.sh tests/smoke.sh
+```
+Both run in CI on Linux and macOS. Update this README in the same PR as any behaviour change.
+
+## License
+[MIT](LICENSE)
