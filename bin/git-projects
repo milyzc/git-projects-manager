@@ -13,11 +13,14 @@
 #   git projects check   [--file <yml>]                                     validate the manifest
 #   git projects init    [--file <yml>]                                     create the manifest from the template
 #   git projects help    (or -h; `git projects --help` is taken by git and looks for a man page)
+#   git projects version (or --version / -V)
 #
 # Status filter: active | paused | archived | all (clone defaults to everything except archived).
 # Requires git and python3 (standard library only). Credentials never go in the manifest:
 # https relies on the git credential helper, ssh on your keys/agent. Prompts are disabled.
 set -euo pipefail
+
+VERSION="0.1.0"
 
 SELF="$(python3 -c 'import os,sys; print(os.path.realpath(sys.argv[1]))' "${BASH_SOURCE[0]}")"
 ROOT="$(cd "$(dirname "$SELF")/.." && pwd -P)"
@@ -40,7 +43,7 @@ die() { echo "git-projects: $1" >&2; exit "${2:-1}"; }
 while [ $# -gt 0 ]; do
   case "$1" in
     list|clone|paths|check|init) cmd="$1"; shift ;;
-    help)         sed -n '2,19p' "$SELF" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    help)         sed -n '2,20p' "$SELF" | sed 's/^# \{0,1\}//'; exit 0 ;;
     -s|--section) [ -n "${2:-}" ] || die "--section needs a value" 2; section="$2"; shift 2 ;;
     --status)     [ -n "${2:-}" ] || die "--status needs a value" 2; status_filter="$2"; shift 2 ;;
     -f|--file)    [ -n "${2:-}" ] || die "--file needs a value" 2; MANIFEST="$2"; shift 2 ;;
@@ -48,7 +51,8 @@ while [ $# -gt 0 ]; do
     -n|--dry-run) dry_run=1; shift ;;
     --adopt)      adopt=1; shift ;;
     -i|--identity) identity=1; shift ;;
-    -h|--help)    sed -n '2,19p' "$SELF" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    version|-V|--version) echo "git-projects $VERSION"; exit 0 ;;
+    -h|--help)    sed -n '2,20p' "$SELF" | sed 's/^# \{0,1\}//'; exit 0 ;;
     -*)           die "unknown option: $1 (see: git projects help)" 2 ;;
     *)            die "unknown command: $1 (see: git projects help)" 2 ;;
   esac
@@ -698,6 +702,7 @@ case "$cmd" in
     rows="$(parse_projects)"
     while IFS=$'\x1f' read -r sec name st p p_exp remotes branch submodules gitcfg notes; do
       [ -n "$p_exp" ] && [ -d "$p_exp" ] && git -C "$p_exp" rev-parse --git-dir >/dev/null 2>&1 && printf '%s\n' "$p_exp"
+      true  # a skipped last row must not become the exit status
     done <<< "$rows"
     ;;
 

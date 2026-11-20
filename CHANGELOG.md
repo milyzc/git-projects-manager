@@ -1,0 +1,15 @@
+# Changelog
+
+## 0.1.0 – 2026-11-20
+First public release.
+
+- One YAML manifest for every repository of a machine, grouped in sections, meant to be kept in
+  a vault and restored on a new machine.
+- `clone` clones what is missing and never touches existing repos beyond adding missing remotes,
+  submodules and identity; `--dry-run`, `--adopt`, `--protocol ssh|https`.
+- `list` (with `--identity`), `paths`, `check`, `init`, `help`, `version`.
+- Per-section and per-project `user:` identity and commit signing (ssh, openpgp, x509), also for
+  current and future submodules through a managed `includeIf`.
+- Credentials in remote URLs are refused and masked; git prompts are disabled.
+- Installer that works from a clone or piped from `curl`.
+- Fix: `paths` exited 1 when the last project in the manifest was not on disk.
