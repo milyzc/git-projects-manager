@@ -666,8 +666,14 @@ case "$cmd" in
     echo "manifest: $MANIFEST"
     last_col="PATH / NOTES"
     [ "$identity" -eq 1 ] && last_col="USER"
-    printf '%-12s %-22s %-9s %-8s %-18s %s\n' "SECTION" "PROJECT" "STATUS" "REPO" "BRANCH" "$last_col"
-    printf '%-12s %-22s %-9s %-8s %-18s %s\n' "-------" "-------" "------" "----" "------" "------------"
+    # Column widths grow with the longest section/project name so long names stay aligned.
+    w_sec=12 w_name=22
+    while IFS=$'\x1f' read -r sec name _; do
+      [ "${#sec}" -gt "$w_sec" ] && w_sec="${#sec}"
+      [ "${#name}" -gt "$w_name" ] && w_name="${#name}"
+    done <<< "$rows"
+    printf '%-*s %-*s %-9s %-8s %-18s %s\n' "$w_sec" "SECTION" "$w_name" "PROJECT" "STATUS" "REPO" "BRANCH" "$last_col"
+    printf '%-*s %-*s %-9s %-8s %-18s %s\n' "$w_sec" "-------" "$w_name" "-------" "------" "----" "------" "------------"
     found=0
     while IFS=$'\x1f' read -r sec name st p p_exp remotes branch submodules gitcfg notes; do
       [ -n "$name" ] || continue
@@ -687,7 +693,7 @@ case "$cmd" in
         tail_info="${p:-}"
         [ -n "$notes" ] && tail_info="${tail_info:+$tail_info — }$notes"
       fi
-      printf '%-12s %-22s %-9s %-8s %-18s %s\n' "$sec" "$name" "$st" "$state" "$br" "$tail_info"
+      printf '%-*s %-*s %-9s %-8s %-18s %s\n' "$w_sec" "$sec" "$w_name" "$name" "$st" "$state" "$br" "$tail_info"
     done <<< "$rows"
     [ "$found" -eq 1 ] || echo "(no projects matched)"
     echo "(* = no remote declared)"
