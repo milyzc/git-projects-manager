@@ -6,6 +6,8 @@
 
 **All your git projects in one portable file. Keep it in your vault; rebuild any machine with one command.**
 
+Website: https://milyzc.github.io/git-projects-manager/
+
 Sooner or later you set up a machine from scratch: a new laptop, a reinstall, a broken or stolen one.
 Then you have to remember every repository, where it lived, its remotes, and which name, email and
 signing key you commit with in each. `git-projects` keeps all of that in one small YAML file. The
@@ -26,14 +28,7 @@ git projects check
 git projects clone            # --protocol https if this machine has no ssh key yet
 git projects list -i
 ```
-```text
-SECTION      PROJECT                STATUS    REPO     BRANCH             USER
--------      -------                ------    ----     ------             ------------
-projects-ai  agent                  active    clean    main               Ada Lovelace <ada@ai-lab.example>
-projects-ai  rag-service            active    dirty    main               Ada Lovelace <ada@ai-lab.example>
-architecture diagrams               active    clean    main               Ada (global) <ada@studio.example>
-architecture side-project           paused    missing  -                  -
-```
+![git projects list -i: every repo with its section, status, state, branch and commit identity](site/assets/list.png)
 Save the file back to the vault whenever you add a project. Recipes for 1Password, Bitwarden, `age`
 and a dotfiles repo: [docs/vault.md](docs/vault.md).
 
@@ -46,8 +41,6 @@ git projects check && git projects clone
 ```
 Requires `git` and `python3` 3.9+. Installing from a clone, a fork or a fixed release (`--ref <tag>`),
 and updating: [docs/install.md](docs/install.md).
-
-<!-- demo: docs/demo.gif (record with vhs or asciinema) -->
 
 ## Manifest
 ```yaml

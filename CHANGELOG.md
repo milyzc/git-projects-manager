@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+- `list`: section and project columns widen to the longest name, so long section names stay aligned.
+- Landing page in `site/`, deployed to GitHub Pages; README shows a `list -i` capture.
+
 ## 0.1.1 – 2026-11-20
 - README shortened to the essentials; full reference moved to `docs/` (install, manifest,
   commands, security) plus a new `docs/vault.md` with 1Password, Bitwarden, `age` and dotfiles recipes.
