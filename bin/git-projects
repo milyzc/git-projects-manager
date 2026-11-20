@@ -20,7 +20,7 @@
 # https relies on the git credential helper, ssh on your keys/agent. Prompts are disabled.
 set -euo pipefail
 
-VERSION="0.1.0"
+VERSION="0.1.1"
 
 SELF="$(python3 -c 'import os,sys; print(os.path.realpath(sys.argv[1]))' "${BASH_SOURCE[0]}")"
 ROOT="$(cd "$(dirname "$SELF")/.." && pwd -P)"

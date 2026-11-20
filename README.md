@@ -20,33 +20,13 @@ file. On the new machine you restore it and run `git projects clone`.
 
 ## Rebuild a machine from scratch
 ```sh
-# 1. install the tool
 curl -fsSL https://raw.githubusercontent.com/milyzc/git-projects-manager/main/install.sh | bash
-
-# 2. restore the manifest from your vault (pick yours)
-op document get projects.yml --out-file ~/.config/git-projects/projects.yml       # 1Password
-bw get attachment projects.yml --itemid <item-id> --output ~/.config/git-projects/projects.yml  # Bitwarden
-age -d -o ~/.config/git-projects/projects.yml projects.yml.age                    # age file
-
-# 3. validate it, then clone everything that is missing
+op document get projects.yml --out-file ~/.config/git-projects/projects.yml   # or Bitwarden, age...
 git projects check
-git projects clone            # --protocol https if this machine has no ssh key yet (gh auth login)
-git projects list -i          # every repo, its state and who you commit as
+git projects clone            # --protocol https if this machine has no ssh key yet
+git projects list -i
 ```
-
 ```text
-$ git projects clone
-[projects-ai/agent] cloning git@github.com:ada-lab/agent.git -> ~/projects-ai/agent
-  set user.name = Ada Lovelace
-  set user.email = ada@ai-lab.example
-[projects-ai/rag-service] cloning git@github.com:ada-lab/rag-service.git -> ~/projects-ai/rag-service
-  set user.name = Ada Lovelace
-  set user.email = ada@ai-lab.example
-[architecture/diagrams] cloning git@github.com:ada-studio/diagrams.git -> ~/architecture/diagrams
-  set user.email = ada@studio.example
-cloned: 3  skipped: 0  failed: 0
-
-$ git projects list -i
 SECTION      PROJECT                STATUS    REPO     BRANCH             USER
 -------      -------                ------    ----     ------             ------------
 projects-ai  agent                  active    clean    main               Ada Lovelace <ada@ai-lab.example>
@@ -54,205 +34,65 @@ projects-ai  rag-service            active    dirty    main               Ada Lo
 architecture diagrams               active    clean    main               Ada (global) <ada@studio.example>
 architecture side-project           paused    missing  -                  -
 ```
-
-The manifest is the source of truth, so save it back to the vault whenever you add a project:
-```sh
-op document edit projects.yml ~/.config/git-projects/projects.yml                 # 1Password
-bw create attachment --file ~/.config/git-projects/projects.yml --itemid <item-id>  # Bitwarden (delete the old one)
-age -p -o projects.yml.age ~/.config/git-projects/projects.yml                    # age, passphrase
-```
-The file can also live anywhere else you sync (a private dotfiles repo, a synced folder): point
-`GIT_PROJECTS_FILE` at it.
+Save the file back to the vault whenever you add a project. Recipes for 1Password, Bitwarden, `age`
+and a dotfiles repo: [docs/vault.md](docs/vault.md).
 
 ## First time
 ```sh
+curl -fsSL https://raw.githubusercontent.com/milyzc/git-projects-manager/main/install.sh | bash
 git projects init             # creates ~/.config/git-projects/projects.yml from the template
 $EDITOR ~/.config/git-projects/projects.yml
 git projects check && git projects clone
 ```
-Then store the file in your vault (`op document create ~/.config/git-projects/projects.yml --title projects.yml`,
-a Bitwarden attachment, or `age -p`).
+Requires `git` and `python3` 3.9+. Installing from a clone, a fork or a fixed release (`--ref <tag>`),
+and updating: [docs/install.md](docs/install.md).
 
 <!-- demo: docs/demo.gif (record with vhs or asciinema) -->
 
-## Install
-Requires `git` and `python3` (3.9+, standard library only; both ship with the macOS CLT).
-Pick one of the two options; both give the same result.
-
-**Option 1: without cloning** (also needs `curl` and `tar`):
-```sh
-curl -fsSL https://raw.githubusercontent.com/milyzc/git-projects-manager/main/install.sh | bash
-```
-Options go after `bash -s --`, e.g. `... | bash -s -- --dry-run`:
-`--ref <branch|tag>` (default `main`), `--dry-run`, `--bin-dir <dir>`.
-`GIT_PROJECTS_REPO=<owner>/<repo>` installs from a fork.
-
-**Option 2: from a clone** (for development), in any directory you choose:
-```sh
-git clone https://github.com/milyzc/git-projects-manager.git <clone-dir>
-<clone-dir>/install.sh    # --dry-run to preview, --bin-dir <dir> to link elsewhere
-```
-
-**What gets installed** (either option):
-- the code, in `~/.local/share/git-projects`;
-- the command `~/.local/bin/git-projects`, a symlink into it, so `git projects` works;
-- the manifest `~/.config/git-projects/projects.yml`, copied from `templates/projects.yml`
-  only if no manifest exists yet (an existing one is never touched).
-
-If `~/.local/bin` is not in your `PATH`, the installer prints the line to add to your shell rc
-(`~/.zshrc`). Then check that it works:
-```sh
-git projects list
-```
-
-**Update**: run the same install command again.
-- Without cloning, the tarball of `<ref>` is downloaded and replaces the previous copy only once
-  the download is complete; the installed ref is recorded in `~/.local/share/git-projects/.installed-ref`.
-- From a clone, `install.sh` checks out `origin/main` (or local `main` without a remote) in a
-  detached worktree, so the installed command always runs `main`, whatever branch the clone has
-  checked out. Re-run it after merging.
-
-The two options do not mix: to switch from one to the other, remove `~/.local/share/git-projects`
-first (the installer says so).
-
-The manifest is read with PyYAML when it is installed; otherwise a built-in parser is used, which
-only understands nested `key: value` mappings (no lists, no `{}` / `[]` flow syntax, no multi-line values).
-
 ## Manifest
-Resolution order: `--file <yml>` → `$GIT_PROJECTS_FILE` → `~/.config/git-projects/projects.yml`.
-To share the registry with another tool that uses the same layout (e.g. ai-memory's
-`projects.yml`), point `GIT_PROJECTS_FILE` at that file; unknown keys are ignored on both sides.
-
 ```yaml
 projects-ai:
-  defaults:                               # reserved: not a project, inherited by the section
+  defaults:                        # inherited by every project in the section
     user:
-      name: Your Name
-      email: you@ai-lab.example
-      signingkey: ~/.ssh/ai_signing.pub   # optional: public key file, or "key::ssh-ed25519 AAAA..."
-      sign: true                          # optional: commit.gpgsign + tag.gpgsign
-      format: ssh                         # optional: ssh (default) | openpgp | x509
-  project-a:
-    path: ~/projects-ai/project-a        # required, ~ expanded
-    remote: git@github.com:org/a.git     # single URL -> remote "origin"; optional: without it the
-                                          # project is listed but never cloned
-    status: active                        # active (default) | paused | archived
-    notes: Main service
-projects-marketing:
-  project-b:
-    path: ~/projects-marketing/project-b
-    remote:                               # several named remotes
-      origin: https://github.com/me/b.git # cloned from origin (or the first one)
-      upstream: git@github.com:org/b.git  # added with `git remote add`
-    branch: main                          # optional, passed as -b
-    submodules: true                      # optional: --recurse-submodules on clone
-    user:                                 # optional, overrides the section defaults per key
-      email: you@marketing.example
+      name: Ada Lovelace
+      email: ada@ai-lab.example
+      signingkey: ~/.ssh/ai_signing.pub
+      sign: true
+  agent:
+    path: ~/projects-ai/agent
+    remote: git@github.com:ada-lab/agent.git
+architecture:
+  diagrams:
+    path: ~/architecture/diagrams
+    remote:
+      origin: git@github.com:ada/diagrams.git
+      upstream: git@github.com:ada-studio/diagrams.git
+    submodules: true
+    status: paused                 # active (default) | paused | archived
+    user:
+      email: ada@studio.example
 ```
-`user:` (from the project, or the section's `defaults:`) is written to the local git config of the
-repo and of every initialized submodule, so commits there never ask for an identity and are signed
-with the right key:
-
-| `user:` key | local git config |
-|---|---|
-| `name`, `email` | `user.name`, `user.email` |
-| `signingkey` | `user.signingkey` (`~` expanded) |
-| `format` | `gpg.format`; defaults to `ssh` when `signingkey` or `sign: true` is set |
-| `sign` | `commit.gpgsign` and `tag.gpgsign` |
-
-`clone` sets each key on new repos and on existing ones where it is unset; a different value
-already in a repo is left untouched with a warning. `check` reports missing or differing values.
-For ssh, `signingkey` must be a `.pub` file or `key::<public key>`: a private key path is rejected.
-`sign: true` without `signingkey` is only a warning, because your global config may provide the key.
-
-GPG works the same way with `format: openpgp` (or `x509` for gpgsm) and the key ID or fingerprint
-as `signingkey`; `format:` is required there, since the default is ssh:
-```yaml
-user:
-  signingkey: 3AA5C34371567BD2
-  sign: true
-  format: openpgp
-```
-`check` asks `gpg --list-secret-keys` (or `gpgsm`, or the program set in `gpg.program` /
-`gpg.<format>.program`) whether the secret key is on this machine, and warns if it is not or the
-program is missing.
-
-Machine-wide settings stay in your global config, not in the manifest. With 1Password as the
-signer, for example:
-```sh
-git config --global gpg.ssh.program /Applications/1Password.app/Contents/MacOS/op-ssh-sign
-```
-The `.pub` file only has to hold the public key (1Password: copy it from the key item). To verify
-signatures locally (`git log --show-signature`), also set `gpg.ssh.allowedSignersFile`.
-
-With `submodules: true`, `clone` passes `--recurse-submodules`; on a repo that already exists it
-runs `git submodule update --init --recursive` when any submodule is still uninitialized.
-`check` warns when a cloned repo has a `.gitmodules` but the manifest does not set the flag.
-
-### Identity in submodules
-Each submodule has its own config (`<repo>/.git/modules/<sub>/config`), so the repo's local
-`user.*` does not reach it. `clone` writes the identity into the submodules that exist at that
-moment, but a submodule initialized later (a pull that brings a new one, `git submodule update
---init`) would have none, and git then commits as `you@your-hostname.local` without asking.
-
-For repos with submodules (`submodules: true` or a `.gitmodules` file), `clone` therefore also:
-1. writes the `user:` config to `~/.config/git-projects/identity/<section>-<project>.gitconfig`;
-2. adds `[includeIf "gitdir:<repo path>/"] path = <that file>` to
-   `~/.config/git-projects/includes.gitconfig`, a file owned by this tool;
-3. adds `include.path = ~/.config/git-projects/includes.gitconfig` to your global git config, once.
-   Nothing else in your global config is changed.
-
-The git dir of every submodule and worktree lives under `<repo>/.git/`, so that include covers the
-repo, all its submodules (current and future) and its worktrees. Local values still win, so a
-submodule with a different `user.email` keeps it and `check` warns. `check` reports a missing
-include, a gitlink with no `.gitmodules` entry (it makes `git submodule` commands fail; the
-submodules are listed from the index, so the others still get their config) and, for each
-initialized submodule, any key whose effective value differs from the
-manifest; `list -i` marks such a repo with `!sub`.
-
-To make git refuse to commit anywhere it has no identity, instead of inventing one:
-`git config --global user.useConfigOnly true`.
+Every field, GPG / x509 signing and identity in submodules: [docs/manifest.md](docs/manifest.md).
 
 ## Commands
 | command | what it does |
 |---|---|
-| `git projects [list] [--section s] [--status st] [--identity]` | the default command. Table with repo state (`missing`, `not-git`, `clean`, `dirty`, `no-path`; a trailing `*` means no remote declared), branch and ahead/behind (`+n -m`, no fetch). `--identity` (`-i`) swaps the path column for the `name <email>` each repo commits with: `(global)` marks a value inherited from your git config, `!` one that differs from the manifest, `(unset)` a missing one. `[signed]` means `commit.gpgsign` is on; `[!signed]` / `[!unsigned]` that it differs from the manifest's `sign:`; `!sub` that a submodule would commit with other values (details in `check`) |
-| `git projects clone [--section s] [--status st] [--dry-run] [--adopt] [--protocol ssh\|https]` | clones every project whose path does not exist or is an empty directory; existing repos are skipped and only get missing remotes, submodules and `user:` identity / signing config added. Skips `archived` by default. |
-| `git projects paths [--section s] [--status st]` | one path per line for the repos present on disk (`for d in $(git projects paths); do ...`) |
-| `git projects check` | validates the manifest: syntax, required fields, duplicate paths, credentials in URLs. On cloned repos it also warns about remote URL drift, remotes not yet added, uninitialized submodules and missing or differing identity / signing config, in the repo and in each initialized submodule, plus a missing submodule identity include. It also rejects a private key as `signingkey` and warns when the ssh key file does not exist or the gpg secret key is not on this machine |
-| `git projects init` | creates the manifest from the template if it does not exist |
-| `git projects version` (or `--version`, `-V`) | prints the version |
-| `git projects help` (or `-h`) | usage summary. `git projects --help` does not work: git intercepts `--help` and looks for a man page |
+| `git projects` / `list` | table of every repo: state, branch, ahead/behind; `-i` shows who you commit as |
+| `git projects clone` | clones what is missing; existing repos only get missing remotes, submodules and identity |
+| `git projects check` | validates the manifest and reports drift on cloned repos |
+| `git projects paths` | one path per line, for scripts |
+| `git projects init` | creates the manifest from the template |
+| `git projects version` / `help` | version / usage |
 
-Every command accepts `--file <yml>` (`-f`). Short forms: `-s` for `--section`, `-n` for `--dry-run`,
-`-i` for `--identity`. `--status` takes `active`, `paused`, `archived` or `all`.
-
-A path that already holds files but no `.git` is reported as an error and left alone. With
-`--adopt`, `clone` turns it into a repo instead: `git init`, the manifest remotes, a fetch, and HEAD
-plus the index set to the remote branch (`branch:` or the remote's default) while every local file
-stays as it is. `git status` in that repo then shows how the local files differ from the remote, and
-you decide what to commit. If the remote has no commits yet, the repo is just initialized with its
-remotes for you to commit and push.
-
-When the remote is empty and the project declares `branch:`, a plain `git clone -b` would fail; `clone`
-then clones without `-b` and points HEAD at that branch, ready for the first commit and push.
-
-`--protocol` rewrites GitHub/GitLab style URLs on the fly (`git@host:org/repo.git` ⇄
-`https://host/org/repo.git`) for a machine that has no ssh key, without editing the manifest.
-
-Exit codes: `0` ok, `1` something failed (a clone, a check error), `2` bad usage, `3` a remote in
-the manifest carries credentials (`list`, `clone`, `paths`; `check` reports it as an error and exits `1`).
+Flags (`--section`, `--status`, `--dry-run`, `--adopt`, `--protocol`), exit codes and details:
+[docs/commands.md](docs/commands.md).
 
 ## Security
-- The manifest holds paths and public-looking URLs only. Credentials never belong in it:
-  `check` and `clone` refuse `https://user:token@host/...`, usernames in https URLs and
-  `?token=`-style queries, and print the URL masked.
-- Clones run with `GIT_TERMINAL_PROMPT=0`: git never asks for a user/password in the terminal.
-  https uses your credential helper (`git config --global credential.helper osxkeychain`, or
-  `gh auth login`); ssh uses your keys / agent. An auth failure is reported and the run continues.
-- The real manifest lives outside this repository (`~/.config/git-projects/`); `.gitignore`
-  blocks a stray copy at the repo root. Only the commented template is versioned.
-- Nothing is logged or stored by the tool itself.
+- Credentials never go in the manifest: URLs with a user, token or password are refused and printed masked.
+- Git never prompts: https uses your credential helper (or `gh auth login`), ssh your keys / agent.
+- Existing repos are never overwritten, and the tool logs or stores nothing.
+
+Full details: [docs/security.md](docs/security.md).
 
 ## Contributing
 Issues and pull requests are welcome. Before opening a PR:
@@ -260,7 +100,7 @@ Issues and pull requests are welcome. Before opening a PR:
 tests/smoke.sh                                       # offline, uses a throwaway $HOME
 shellcheck -S warning bin/git-projects install.sh tests/smoke.sh
 ```
-Both run in CI on Linux and macOS. Update this README in the same PR as any behaviour change.
+Both run in CI on Linux and macOS. Update the README or `docs/` in the same PR as any behaviour change.
 
 ## License
 [MIT](LICENSE)
