@@ -12,7 +12,7 @@ signing key you commit with in each. `git-projects` keeps all of that in one sma
 file holds no secrets, so it fits next to your SSH keys in 1Password, Bitwarden or an `age`-encrypted
 file. On the new machine you restore it and run `git projects clone`.
 
-- **One file, every repo**: path, remotes, branch, submodules, status, grouped in sections (`work`, `personal`...).
+- **One file, every repo**: path, remotes, branch, submodules, status, grouped in sections (`projects-ai`, `projects-marketing`, `architecture`...).
 - **Safe to re-run**: missing repos are cloned, existing ones are never overwritten.
 - **Right identity everywhere**: per-section `user.name` / `user.email` / signing key written to each
   repo and its submodules, so nothing commits as `you@your-hostname.local`.
@@ -36,23 +36,23 @@ git projects list -i          # every repo, its state and who you commit as
 
 ```text
 $ git projects clone
-[work/api] cloning git@github.com:acme/api.git -> ~/work/api
+[projects-ai/agent] cloning git@github.com:ada-lab/agent.git -> ~/projects-ai/agent
   set user.name = Ada Lovelace
-  set user.email = ada@work.example
-[work/web] cloning git@github.com:acme/web.git -> ~/work/web
+  set user.email = ada@ai-lab.example
+[projects-ai/rag-service] cloning git@github.com:ada-lab/rag-service.git -> ~/projects-ai/rag-service
   set user.name = Ada Lovelace
-  set user.email = ada@work.example
-[personal/dotfiles] cloning git@github.com:ada/dotfiles.git -> ~/personal/dotfiles
-  set user.email = ada@personal.example
+  set user.email = ada@ai-lab.example
+[architecture/diagrams] cloning git@github.com:ada-studio/diagrams.git -> ~/architecture/diagrams
+  set user.email = ada@studio.example
 cloned: 3  skipped: 0  failed: 0
 
 $ git projects list -i
 SECTION      PROJECT                STATUS    REPO     BRANCH             USER
 -------      -------                ------    ----     ------             ------------
-work         api                    active    clean    main               Ada Lovelace <ada@work.example>
-work         web                    active    dirty    main               Ada Lovelace <ada@work.example>
-personal     dotfiles               active    clean    main               Ada (global) <ada@personal.example>
-personal     side-project           paused    missing  -                  -
+projects-ai  agent                  active    clean    main               Ada Lovelace <ada@ai-lab.example>
+projects-ai  rag-service            active    dirty    main               Ada Lovelace <ada@ai-lab.example>
+architecture diagrams               active    clean    main               Ada (global) <ada@studio.example>
+architecture side-project           paused    missing  -                  -
 ```
 
 The manifest is the source of truth, so save it back to the vault whenever you add a project:
@@ -124,30 +124,30 @@ To share the registry with another tool that uses the same layout (e.g. ai-memor
 `projects.yml`), point `GIT_PROJECTS_FILE` at that file; unknown keys are ignored on both sides.
 
 ```yaml
-work:
+projects-ai:
   defaults:                               # reserved: not a project, inherited by the section
     user:
       name: Your Name
-      email: you@work.example
-      signingkey: ~/.ssh/work_signing.pub # optional: public key file, or "key::ssh-ed25519 AAAA..."
+      email: you@ai-lab.example
+      signingkey: ~/.ssh/ai_signing.pub   # optional: public key file, or "key::ssh-ed25519 AAAA..."
       sign: true                          # optional: commit.gpgsign + tag.gpgsign
       format: ssh                         # optional: ssh (default) | openpgp | x509
   project-a:
-    path: ~/work/project-a               # required, ~ expanded
+    path: ~/projects-ai/project-a        # required, ~ expanded
     remote: git@github.com:org/a.git     # single URL -> remote "origin"; optional: without it the
                                           # project is listed but never cloned
     status: active                        # active (default) | paused | archived
     notes: Main service
-personal:
+projects-marketing:
   project-b:
-    path: ~/personal/project-b
+    path: ~/projects-marketing/project-b
     remote:                               # several named remotes
       origin: https://github.com/me/b.git # cloned from origin (or the first one)
       upstream: git@github.com:org/b.git  # added with `git remote add`
     branch: main                          # optional, passed as -b
     submodules: true                      # optional: --recurse-submodules on clone
     user:                                 # optional, overrides the section defaults per key
-      email: you@personal.example
+      email: you@marketing.example
 ```
 `user:` (from the project, or the section's `defaults:`) is written to the local git config of the
 repo and of every initialized submodule, so commits there never ask for an identity and are signed
