@@ -1,5 +1,5 @@
 # git-projects manifest: the git repositories of this machine, grouped by arbitrary sections
-# (work, personal, university...). THIS FILE IS A TEMPLATE: install.sh / `git projects init`
+# (projects-ai, projects-marketing, architecture...). THIS FILE IS A TEMPLATE: install.sh / `git projects init`
 # copy it to ~/.config/git-projects/projects.yml (outside the repository). Override the
 # location with $GIT_PROJECTS_FILE or --file.
 #
@@ -32,32 +32,32 @@
 # rejects them. https authenticates through the git credential helper (osxkeychain, gh auth),
 # ssh through your keys / agent.
 
-work:
+projects-ai:
   # defaults:
   #   user:
   #     name: Your Name
-  #     email: you@work.example
-  #     signingkey: ~/.ssh/work_signing.pub
+  #     email: you@ai-lab.example
+  #     signingkey: ~/.ssh/ai_signing.pub
   #     sign: true
   # project-a:
-  #   path: ~/work/project-a
+  #   path: ~/projects-ai/project-a
   #   remote: git@github.com:org/project-a.git
   #   status: active
   #   notes: Main service
 
-personal:
+projects-marketing:
   # project-b:
-  #   path: ~/personal/project-b
+  #   path: ~/projects-marketing/project-b
   #   remote:
   #     origin: https://github.com/me/project-b.git
   #     upstream: git@github.com:org/project-b.git
   #   branch: main
   #   user:
-  #     email: you@personal.example
+  #     email: you@marketing.example
 
-university:
+architecture:
   # project-c:
-  #   path: ~/university/project-c
+  #   path: ~/architecture/project-c
   #   remote: https://gitlab.com/me/project-c.git
   #   submodules: true
   #   status: paused
