@@ -3,6 +3,8 @@
 ## Unreleased
 - `list`: section and project columns widen to the longest name, so long section names stay aligned.
 - Landing page in `site/`, deployed to GitHub Pages; README shows a `list -i` capture.
+- Landing: tabbed terminal demo (`list -i`, `clone`, `check`) as real text instead of an image,
+  restore commands per vault in tabs, copy buttons, 1200×630 social card and a dev.to cover.
 
 ## 0.1.1 – 2026-11-20
 - README shortened to the essentials; full reference moved to `docs/` (install, manifest,
