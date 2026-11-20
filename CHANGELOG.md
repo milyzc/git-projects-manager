@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.1 – 2026-11-20
+- README shortened to the essentials; full reference moved to `docs/` (install, manifest,
+  commands, security) plus a new `docs/vault.md` with 1Password, Bitwarden, `age` and dotfiles recipes.
+- Examples use `projects-ai`, `projects-marketing` and `architecture` sections.
+
 ## 0.1.0 – 2026-11-20
 First public release.
 
